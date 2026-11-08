@@ -241,6 +241,61 @@ def transcribe_mono(y: np.ndarray, sr: int = SR, fmin: float = 65.0, fmax: float
 # 对比：原声片段与 VST 渲染的频谱相似度（检测八度 / 半音错误）
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 调音：整体调音参考 + 单个音符的精确音分（复音时用频谱峰值，而不是模型的 1/3 半音音高图）
+# ---------------------------------------------------------------------------
+
+def estimate_tuning(y: np.ndarray, sr: int = SR, seconds: float = 90) -> float:
+    """整体调音偏差（音分，相对 A4=440Hz）。例：+8 表示整首歌大约按 A4=442Hz 调音。"""
+    H = librosa.effects.harmonic(y[: int(sr * seconds)])
+    return float(librosa.estimate_tuning(y=H, sr=sr, resolution=0.01, bins_per_octave=12) * 100)
+
+
+def refine_cents(y: np.ndarray, sr: int, notes: list[dict], n_fft: int = 8192, max_win: float = 0.6):
+    """用音频本身测每个音符的精确音高（音分偏差），就地写入 note["cents"]。
+
+    在音符开头最多 0.6 秒内做高分辨率 FFT（8192 点，约 2.7 Hz/格），在第 1~4 泛音附近 ±50 音分内
+    找最强的谱峰，用抛物线插值得到亚格精度的频率，再换算成相对该泛音理论频率的音分偏差。
+    低音区基频分辨率不够时，高次泛音会自动胜出（它们的绝对频率高、相对误差小）。"""
+    win = np.hanning(n_fft)
+    for n in notes:
+        s = int(n["start"] * sr)
+        e = min(len(y), s + int(min(max_win, n["end"] - n["start"]) * sr))
+        seg = y[s:e]
+        if len(seg) < 2048:
+            continue
+        frames = [seg[i:i + n_fft] for i in range(0, max(1, len(seg) - n_fft + 1), n_fft // 4)]
+        spec = np.zeros(n_fft // 2 + 1)
+        for fr in frames:
+            fr = np.pad(fr, (0, n_fft - len(fr)))
+            spec += np.abs(np.fft.rfft(fr * win)) ** 2
+        logs = np.log(spec + 1e-12)
+        f_nom = 440.0 * 2 ** ((n["pitch"] - 69) / 12)
+        best = None
+        for h in (1, 2, 3, 4):
+            fc = f_nom * h
+            if fc > sr / 2 - 200:
+                break
+            lo = int(fc * 2 ** (-50 / 1200) * n_fft / sr)
+            hi = int(np.ceil(fc * 2 ** (50 / 1200) * n_fft / sr))
+            if hi - lo < 2 or lo < 1:
+                continue
+            k = lo + int(np.argmax(logs[lo:hi + 1]))
+            if not 1 <= k < len(logs) - 1:
+                continue
+            a, b, c = logs[k - 1], logs[k], logs[k + 1]
+            denom = a - 2 * b + c
+            delta = 0.5 * (a - c) / denom if denom != 0 else 0.0
+            f = (k + float(np.clip(delta, -0.5, 0.5))) * sr / n_fft
+            cents = 1200 * np.log2(f / fc)
+            strength = spec[k]
+            if abs(cents) <= 50 and (best is None or strength > best[0]):
+                best = (strength, cents)
+        if best is not None:
+            n["cents"] = round(float(best[1]), 1)
+    return notes
+
+
 PROFILE_LO, PROFILE_HI = 24, 120   # C1 ~ C9，每个半音一个频带
 PROFILE_NFFT = 8192
 

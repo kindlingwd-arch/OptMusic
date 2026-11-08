@@ -25,7 +25,7 @@ hiddenimports += collect_submodules("mido")
 hiddenimports += collect_submodules("basic_pitch") + collect_submodules("mir_eval")
 hiddenimports += ["onnxruntime", "pretty_midi", "resampy", "optmusic.poly"]
 hiddenimports += ["optmusic.server", "optmusic.analysis", "optmusic.harmony",
-                  "optmusic.host", "optmusic.midi_export", "multipart", "python_multipart"]
+                  "optmusic.host", "optmusic.midi_export", "optmusic.checker", "multipart", "python_multipart"]
 
 excludes = ["tkinter", "matplotlib", "tensorflow", "coremltools", "tflite_runtime", "IPython", "jupyter", "pytest", "webview", "clr",
             "pythonnet", "PyInstaller", "notebook", "pandas"]

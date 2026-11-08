@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, harmony, poly
+from . import analysis, checker, harmony, poly
 from .host import BUILTIN, RENDER_SR, EditorOpen, PluginHost, scan_vst3
 from .midi_export import export_midi
 
@@ -101,6 +101,12 @@ def create_app(host: PluginHost) -> FastAPI:
         poly_params: dict | None = None
 
     poly_cache: dict[str, dict] = {}
+    tuning_cache: dict[str, float] = {}
+
+    def tuning(pid: str) -> float:
+        if pid not in tuning_cache:
+            tuning_cache[pid] = analysis.estimate_tuning(get_audio(pid))
+        return tuning_cache[pid]
 
     def poly_output(pid: str) -> dict:
         """复音模型输出：内存 → 磁盘缓存 → 运行模型。"""
@@ -150,6 +156,7 @@ def create_app(host: PluginHost) -> FastAPI:
                     raise HTTPException(400, "复音引擎不可用（缺少 basic-pitch / onnxruntime）")
                 out = poly_output(req.id)
                 notes = poly.decode(out, poly.PolyParams.from_dict(req.poly_params))
+                analysis.refine_cents(y, analysis.SR, notes)   # 复音：用频谱峰值测精确音分
                 activation = activation_payload(out)
             else:
                 notes, curve = analysis.transcribe_mono(
@@ -162,7 +169,7 @@ def create_app(host: PluginHost) -> FastAPI:
             return {"notes": notes, "grid": grid.to_dict(), "pitch_curve": curve,
                     "activation": activation, "engine": mode, "polyphony": polyphony,
                     "poly_params": poly.PolyParams.from_dict(req.poly_params).to_dict(),
-                    "key": key, "chords": chords,
+                    "key": key, "chords": chords, "tuning_cents": round(tuning(req.id), 1),
                     "duration": len(y) / analysis.SR, "elapsed": round(time.time() - t0, 2)}
         return guard(run)
 
@@ -177,6 +184,7 @@ def create_app(host: PluginHost) -> FastAPI:
             t0 = time.time()
             stats = {}
             notes = poly.decode(poly_output(req.id), poly.PolyParams.from_dict(req.poly_params), stats)
+            analysis.refine_cents(get_audio(req.id), analysis.SR, notes)
             return {"notes": number(notes), "stats": stats, "elapsed": round(time.time() - t0, 2)}
         return guard(run)
 
@@ -219,6 +227,18 @@ def create_app(host: PluginHost) -> FastAPI:
         guard(host.open_editor)
         return host.info()
 
+    @app.get("/api/plugins/presets")
+    def plugin_presets():
+        return {"presets": guard(host.presets), "current": host.info().get("preset")}
+
+    class PresetReq(BaseModel):
+        name: str | None = None
+
+    @app.post("/api/plugins/preset")
+    def plugin_preset(req: PresetReq):
+        ref_cache.clear()
+        return guard(host.set_preset, req.name)
+
     @app.get("/api/plugins/current")
     def current():
         return host.info()
@@ -251,45 +271,32 @@ def create_app(host: PluginHost) -> FastAPI:
     # ------------------------------------------------------------------ 校验
     class CheckReq(BaseModel):
         id: str
-        notes: list[dict]
+        notes: list[dict]                    # 本次要校验的音符
+        context: list[dict] | None = None    # 工程里全部音符（找“同时发声的其他音”用）
         cents_tolerance: float = 30.0
 
-    def ref_profile(pitch: int) -> np.ndarray:
-        key = (host.state_version, pitch)
-        if key not in ref_cache:
-            audio = host.render([(pitch, 100, 0.0, 0.8)], 0.9)
+    def ensure_refs(pitches) -> None:
+        """把还没缓存的参考音一次性批量渲染（命令行渲染器每次调用都有固定开销）。"""
+        missing = sorted({p for p in pitches if (host.state_version, p) not in ref_cache})
+        for p, audio in host.render_batch(missing).items():
             mono = librosa.resample(audio.mean(axis=0), orig_sr=RENDER_SR, target_sr=analysis.SR)
-            ref_cache[key] = analysis.cqt_profile(mono[int(0.03 * analysis.SR):])
-        return ref_cache[key]
+            ref_cache[(host.state_version, p)] = checker.semitone_spectrum(mono[int(0.03 * analysis.SR):], analysis.SR)
 
     @app.post("/api/check")
     def check(req: CheckReq):
         def run():
             y = get_audio(req.id)
-            sr = analysis.SR
-            results = []
-            for n in req.notes:
-                p = int(n["pitch"])
-                s = int(n["start"] * sr)
-                e = int(min(n["end"], n["start"] + 1.0) * sr)
-                seg = y[s:e]
-                if len(seg) < 512 or np.max(np.abs(seg)) < 1e-4:
-                    results.append({"id": n["id"], "status": "silent", "sims": {}})
-                    continue
-                prof = analysis.cqt_profile(seg)
-                cands = [c for c in (p, p - 12, p + 12, p - 1, p + 1) if 21 <= c <= 108]
-                sims = {c: analysis.similarity(prof, ref_profile(c)) for c in cands}
-                best = max(sims, key=sims.get)
-                cents = float(n.get("cents") or 0.0)
-                if best != p and sims[best] - sims[p] > 0.03:
-                    status = "suspect"
-                elif abs(cents) > req.cents_tolerance:
-                    status = "offpitch"
-                else:
-                    status = "ok"
-                results.append({"id": n["id"], "status": status, "match": round(sims[p], 3),
-                                "suggest": best if status == "suspect" else None,
-                                "sims": {str(k): round(v, 3) for k, v in sims.items()}})
+            context = req.context or req.notes
+            # 与待校验音符同时发声的其他音也需要模板
+            span = [(n["start"], n["end"]) for n in req.notes]
+            near = [m for m in context if any(min(e, m["end"]) > max(s, m["start"]) for s, e in span)]
+            ensure_refs(checker.needed_pitches(req.notes) | {int(m["pitch"]) for m in near})
+            templates = {p: v for (ver, p), v in ref_cache.items() if ver == host.state_version}
+            tun = tuning(req.id)
+            # 音准按“相对整体调音”判断：整首歌按 A4=442Hz 调的话，每个音 +8 音分不算跑调
+            rel = [dict(n, cents=float(n.get("cents") or 0.0) - tun) for n in req.notes]
+            results = checker.check_notes(y, analysis.SR, rel, near, templates,
+                                          cents_tolerance=req.cents_tolerance)
             return {"results": results, "plugin": host.plugin_name}
         return guard(run)
 

@@ -115,5 +115,5 @@ tests/                 合成音频端到端自测
 
 - 识别引擎自动选择：单音（人声、独奏）用 pYIN，和弦/钢琴/伴奏用复音模型 basic-pitch（ONNX）。复音模式对弦乐等缓慢起音乐器召回偏低，详见算法文档 1.6。
 - 恒定速度假设，变速歌曲网格会逐渐偏离。
-- 只支持 VST3（pedalboard 不支持 VST2）。本机实测：Surge XT、PAPU、BBC Symphony Orchestra 可用；Pianoteq 6 STAGE 离线渲染无声。
+- 只支持 VST3（pedalboard 不支持 VST2）。本机实测：Surge XT、PAPU、BBC Symphony Orchestra 直接用 VST3 渲染；Pianoteq 的 VST3 离线无声，程序会自动改用 Pianoteq 独立程序的命令行渲染（可选预设）。
 - 桌面版未做代码签名，首次运行时 Windows SmartScreen 可能提示“未知发布者”，选择“仍要运行”即可。

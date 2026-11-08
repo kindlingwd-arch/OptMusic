@@ -627,6 +627,7 @@ async function analyze() {
     setActivation(res.activation);
     $("polySection").hidden = res.engine !== "poly";
     S.grid = res.grid; S.curve = res.pitch_curve; S.key = res.key; S.chords = res.chords || [];
+    S.tuning = res.tuning_cents;
     S.checks = {}; S.sel.clear(); S.vstDirty = true;
     if (S.notes.length) {
       const ps = S.notes.map(n => n.pitch).sort((a, b) => a - b);
@@ -741,6 +742,8 @@ function updateGridUI() {
   const off = (-S.grid.origin / beatLen());
   $("gridInfo").textContent =
     (S.key ? `调性：${S.key.name}（${S.key.signature_text}，r=${S.key.confidence}）\n` : "") +
+    (S.tuning != null ? `整体调音 A4 = ${(440 * Math.pow(2, S.tuning / 1200)).toFixed(1)} Hz（${S.tuning >= 0 ? "+" : ""}${S.tuning.toFixed(0)} 音分）
+` : "") +
     `音频起点位于第 1 小节第 ${(off + 1).toFixed(2)} 拍`;
   $("gridInfo").style.whiteSpace = "pre-line";
 }
@@ -791,11 +794,12 @@ async function runCheck(notes) {
   stop();
   const tol = parseFloat($("inTol").value) || 30;
   const chunk = 30;
+  const context = S.notes.map(n => ({ id: n.id, pitch: n.pitch, start: n.start, end: n.end }));
   try {
     for (let i = 0; i < notes.length; i += chunk) {
       busy(`用 ${S.plugin.name} 逐音对比中… ${i}/${notes.length}`);
       const part = notes.slice(i, i + chunk).map(n => ({ id: n.id, pitch: n.pitch, start: n.start, end: n.end, cents: centsOf(n) }));
-      const r = await api("/api/check", { id: S.project, notes: part, cents_tolerance: tol });
+      const r = await api("/api/check", { id: S.project, notes: part, context, cents_tolerance: tol });
       r.results.forEach(x => S.checks[x.id] = x);
       updateCheckSummary(); draw();
     }
@@ -881,10 +885,34 @@ async function loadPluginList() {
 }
 function setPluginInfo(info) {
   if (info.version !== S.plugin.version) { S.vstDirty = true; noteCache.clear(); }
+  const wasStandalone = S.plugin.renderer === "standalone";
   S.plugin = info;
-  $("pluginStatus").textContent = "当前：" + info.name + (info.editor_open ? "（插件界面打开中）" : "");
+  const standalone = info.renderer === "standalone";
+  const mode = standalone ? "（独立程序渲染）" : "";
+  $("pluginStatus").textContent = "当前：" + info.name + mode +
+    (info.editor_open ? (standalone ? " — 程序已打开，关闭后生效" : "（插件界面打开中）") : "");
   $("btnEditor").disabled = info.is_builtin;
+  $("btnEditor").textContent = standalone ? "打开 " + info.name.replace(/\s*STAGE$/, "") : "插件界面";
+  $("presetRow").hidden = !standalone;
+  if (standalone && !wasStandalone) loadPresets();
 }
+async function loadPresets() {
+  const sel = $("selPreset");
+  sel.innerHTML = '<option value="">（使用 Pianoteq 当前音色）</option><option disabled>加载预设列表…</option>';
+  try {
+    const r = await api("/api/plugins/presets");
+    sel.innerHTML = '<option value="">（使用 Pianoteq 当前音色）</option>';
+    r.presets.forEach(n => { const o = document.createElement("option"); o.value = o.textContent = n; sel.appendChild(o); });
+    sel.value = r.current || "";
+  } catch (err) { status("预设列表获取失败：" + err.message, true); }
+}
+$("selPreset").onchange = async () => {
+  try {
+    setPluginInfo(await api("/api/plugins/preset", { name: $("selPreset").value || null }));
+    S.checks = {}; updateCheckSummary(); draw();
+    status("音色预设：" + ($("selPreset").value || "Pianoteq 当前音色"));
+  } catch (err) { status(err.message, true); }
+};
 $("btnLoadPlugin").onclick = async () => {
   const path = $("selPlugin").value;
   busy("正在加载插件 " + $("selPlugin").selectedOptions[0].textContent + "…（采样音源可能需要较长时间）");
