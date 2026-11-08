@@ -1,0 +1,9 @@
+numpy
+scipy
+librosa>=0.11
+soundfile
+pedalboard>=0.9
+mido
+fastapi
+uvicorn[standard]>=0.29
+python-multipart
