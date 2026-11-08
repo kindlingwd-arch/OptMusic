@@ -393,17 +393,32 @@ canvas.addEventListener("dblclick", e => {
   notesChanged([n.id]);
 });
 
+const ROW_MIN = 5, ROW_MAX = 40;
+/** 纵向缩放（改变每个半音的行高），以鼠标所在的音高为中心，缩放时该音高不跳动。 */
+function zoomRows(factor, y) {
+  const anchorY = Math.min(Math.max(y, TOP), H) - TOP;           // 鼠标在钢琴窗内的纵坐标
+  const pitchPos = (anchorY + S.view.scrollY) / S.view.rowH;      // 鼠标下方是第几行（可带小数）
+  const rowH = Math.min(ROW_MAX, Math.max(ROW_MIN, S.view.rowH * factor));
+  if (rowH === S.view.rowH) return;
+  S.view.rowH = rowH;
+  S.view.scrollY = pitchPos * rowH - anchorY;
+}
+
 canvas.addEventListener("wheel", e => {
   e.preventDefault();
-  const [x] = pos(e);
-  if (e.ctrlKey) {
+  const [x, y] = pos(e);
+  // Windows 上按住 Shift 滚轮时，浏览器会把滚动量放到 deltaX，这里两轴都取
+  const d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+  if (e.ctrlKey && e.shiftKey) {                       // Ctrl+Shift+滚轮：纵向缩放
+    zoomRows(d < 0 ? 1.12 : 1 / 1.12, y);
+  } else if (e.ctrlKey) {                              // Ctrl+滚轮：横向缩放
     const t = xt(x);
-    S.view.pps = Math.min(2000, Math.max(8, S.view.pps * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    S.view.pps = Math.min(2000, Math.max(8, S.view.pps * (d < 0 ? 1.15 : 1 / 1.15)));
     S.view.scrollX = t - (x - KB) / S.view.pps;
-  } else if (e.altKey) {
-    S.view.rowH = Math.min(30, Math.max(6, S.view.rowH + (e.deltaY < 0 ? 1 : -1)));
+  } else if (e.altKey) {                               // Alt+滚轮：纵向缩放（同上，保留旧习惯）
+    zoomRows(d < 0 ? 1.12 : 1 / 1.12, y);
   } else if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
-    S.view.scrollX += (e.shiftKey ? e.deltaY : e.deltaX) / S.view.pps;
+    S.view.scrollX += d / S.view.pps;                  // Shift+滚轮 / 触控板横滑：左右滚动
   } else {
     S.view.scrollY += e.deltaY;
   }
@@ -698,7 +713,8 @@ async function analyze() {
     S.nextId = S.notes.length + 1;
     S.engine = res.engine;
     setActivation(res.activation);
-    $("polySection").hidden = res.engine !== "poly";
+    $("polySection").hidden = !["poly", "melody"].includes(res.engine);
+    showPolyStats(res.engine, res.stats);
     S.grid = res.grid; S.curve = res.pitch_curve; S.key = res.key; S.chords = res.chords || [];
     S.tuning = res.tuning_cents;
     S.checks = {}; S.sel.clear(); S.vstDirty = true;
@@ -708,8 +724,8 @@ async function analyze() {
       S.view.scrollY = (HI - mid) * S.view.rowH - (H - TOP) / 2;
     }
     clampScroll(); updateGridUI(); updateNoteInfo(); updateCheckSummary(); draw();
-    const eng = res.engine === "poly" ? "复音引擎" : "单音引擎";
-    const why = res.polyphony != null ? `（自动：同时发声约 ${res.polyphony} 个音级）` : "";
+    const eng = { poly: "复音引擎", melody: "单旋律引擎（pYIN + 复音模型补漏）", mono: "单音引擎（pYIN）" }[res.engine] || res.engine;
+    const why = res.polyphony != null ? `（自动：多音比例 ${(res.polyphony * 100).toFixed(0)}%）` : "";
     setTimeout(() => prefetchBank(), 300);
     status(`${eng}${why}识别完成：${S.notes.length} 个音符，${S.grid.bpm.toFixed(2)} BPM，${S.grid.beats_per_bar} 拍/小节` +
       (S.key ? `，调性 ${S.key.name}` : "") + `，用时 ${res.elapsed}s`);
@@ -754,14 +770,21 @@ POLY_UI.forEach(([id, , fmt]) => {
 $("btnPolyReset").onclick = () => { setPolyUI(polyDefaults); retranscribe(); };
 $("chkHeat").onchange = draw;
 
+function showPolyStats(engine, st) {
+  if (!st || st.raw == null) { $("polyStats").textContent = ""; return; }
+  $("polyStats").textContent = engine === "melody"
+    ? `pYIN ${st.pyin} + 补漏 ${st.poly_added}`
+    : `模型 ${st.raw} → 合并 ${st.after_merge} → 去泛音 ${st.final}`;
+}
+
 async function retranscribe() {
-  if (!S.project || S.engine !== "poly") return;
+  if (!S.project || !["poly", "melody"].includes(S.engine)) return;
   try {
-    const r = await api("/api/retranscribe", { id: S.project, poly_params: polyParams() });
+    const r = await api("/api/retranscribe", { id: S.project, poly_params: polyParams(), engine: S.engine });
     pushUndo();
     S.notes = r.notes.map(toNote); S.nextId = S.notes.length + 1;
     S.sel.clear(); S.checks = {};
-    $("polyStats").textContent = `模型 ${r.stats.raw} → 合并 ${r.stats.after_merge} → 去泛音 ${r.stats.final}`;
+    showPolyStats(S.engine, r.stats);
     notesChanged();
     status(`已按新参数重新生成：${S.notes.length} 个音符（${r.elapsed}s）`);
   } catch (err) { status("重新生成失败：" + err.message, true); }

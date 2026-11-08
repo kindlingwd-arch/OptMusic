@@ -103,6 +103,26 @@ def create_app(host: PluginHost) -> FastAPI:
     poly_cache: dict[str, dict] = {}
     tuning_cache: dict[str, float] = {}
 
+    MELODY_RATIO = 0.18      # 多音比例低于此值判为单旋律（实测：独唱 0.06，合成旋律+鼓 0.15，和弦伴奏 0.25，复音合成 0.52+）
+    mono_cache: dict[tuple, tuple] = {}
+
+    def mono_result(pid: str, fmin=65.0, fmax=1400.0, min_note=0.07):
+        key = (pid, fmin, fmax, min_note)
+        if key not in mono_cache:
+            mono_cache.clear()
+            mono_cache[key] = analysis.transcribe_mono(get_audio(pid), fmin=fmin, fmax=fmax, min_note=min_note)
+        return mono_cache[key]
+
+    def melody_notes(pid: str, poly_params: dict | None):
+        """单旋律（人声 / 独奏）：pYIN 为主干 + 复音模型补漏。"""
+        mono_notes, curve = mono_result(pid)
+        pn = poly.decode(poly_output(pid), poly.PolyParams.from_dict(poly_params))
+        notes, st = poly.fuse_melody([dict(n) for n in mono_notes], pn, curve)
+        added = [n for n in notes if n.get("source") == "poly"]
+        analysis.refine_cents(get_audio(pid), analysis.SR, added)
+        return notes, {"raw": st["poly_total"], "after_merge": st["pyin"], "final": len(notes),
+                       "pyin": st["pyin"], "poly_added": st["poly_added"]}
+
     def tuning(pid: str) -> float:
         if pid not in tuning_cache:
             tuning_cache[pid] = analysis.estimate_tuning(get_audio(pid))
@@ -146,28 +166,36 @@ def create_app(host: PluginHost) -> FastAPI:
         def run():
             t0 = time.time()
             y = get_audio(req.id)
-            curve, activation, polyphony = None, None, None
+            curve, activation, polyphony, stats = None, None, None, {}
             mode = req.mode
+            if mode in ("poly", "melody") and not poly.available():
+                raise HTTPException(400, "复音模型不可用（缺少 basic-pitch / onnxruntime）")
             if mode == "auto":
-                polyphony = poly.estimate_polyphony(y, analysis.SR)
-                mode = "poly" if polyphony >= 2 and poly.available() else "mono"
-            if mode == "poly":
-                if not poly.available():
-                    raise HTTPException(400, "复音引擎不可用（缺少 basic-pitch / onnxruntime）")
+                if poly.available():
+                    # 先跑复音模型，用“同时有两个非泛音关系的音在响”的比例判断是不是单旋律
+                    polyphony = round(poly.monophony_ratio(poly_output(req.id)), 3)
+                    mode = "melody" if polyphony < MELODY_RATIO else "poly"
+                else:
+                    mode = "mono"
+            if mode in ("poly", "melody"):
                 out = poly_output(req.id)
-                notes = poly.decode(out, poly.PolyParams.from_dict(req.poly_params))
-                analysis.refine_cents(y, analysis.SR, notes)   # 复音：用频谱峰值测精确音分
                 activation = activation_payload(out)
+            if mode in ("mono", "melody"):
+                mono_notes, curve = mono_result(req.id, req.fmin, req.fmax, req.min_note)
+            if mode == "poly":
+                notes = poly.decode(out, poly.PolyParams.from_dict(req.poly_params), stats)
+                analysis.refine_cents(y, analysis.SR, notes)   # 复音：用频谱峰值测精确音分
+            elif mode == "melody":
+                notes, stats = melody_notes(req.id, req.poly_params)
             else:
-                notes, curve = analysis.transcribe_mono(
-                    y, fmin=req.fmin, fmax=req.fmax, min_note=req.min_note)
+                notes = [dict(n) for n in mono_notes]
             grid = analysis.estimate_grid(y, beats_per_bar=req.beats_per_bar,
                                           note_onsets=[n["start"] for n in notes])
             number(notes)
             key, chords = harmony.analyze_harmony(notes, grid.bpm, grid.beats_per_bar, grid.origin,
                                                   audio_chroma(req.id))
             return {"notes": notes, "grid": grid.to_dict(), "pitch_curve": curve,
-                    "activation": activation, "engine": mode, "polyphony": polyphony,
+                    "activation": activation, "engine": mode, "polyphony": polyphony, "stats": stats,
                     "poly_params": poly.PolyParams.from_dict(req.poly_params).to_dict(),
                     "key": key, "chords": chords, "tuning_cents": round(tuning(req.id), 1),
                     "duration": len(y) / analysis.SR, "elapsed": round(time.time() - t0, 2)}
@@ -176,6 +204,7 @@ def create_app(host: PluginHost) -> FastAPI:
     class RetranscribeReq(BaseModel):
         id: str
         poly_params: dict | None = None
+        engine: str = "poly"
 
     @app.post("/api/retranscribe")
     def retranscribe(req: RetranscribeReq):
@@ -183,8 +212,11 @@ def create_app(host: PluginHost) -> FastAPI:
         def run():
             t0 = time.time()
             stats = {}
-            notes = poly.decode(poly_output(req.id), poly.PolyParams.from_dict(req.poly_params), stats)
-            analysis.refine_cents(get_audio(req.id), analysis.SR, notes)
+            if req.engine == "melody":
+                notes, stats = melody_notes(req.id, req.poly_params)
+            else:
+                notes = poly.decode(poly_output(req.id), poly.PolyParams.from_dict(req.poly_params), stats)
+                analysis.refine_cents(get_audio(req.id), analysis.SR, notes)
             return {"notes": number(notes), "stats": stats, "elapsed": round(time.time() - t0, 2)}
         return guard(run)
 

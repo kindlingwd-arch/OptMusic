@@ -288,6 +288,149 @@ def refine_onsets(notes: list[dict], frame: np.ndarray, p: PolyParams, T: np.nda
         last_end[n["pitch"]] = n["end"]
 
 
+# ---------------------------------------------------------------------------
+# 单旋律解码（人声 / 独奏）：同一时刻只取一个音
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MelodyParams:
+    voicing: float = 0.25        # “正在响”概率高于此值才算有音（比复音的 0.4 宽松：人声起音软）
+    harmonic_cut: float = 0.6    # 低 12/19/24 半音处有音时，本音高的显著度按此比例削减（压泛音）
+    jump_cost: float = 0.6       # 换音的代价（越大越不容易在相邻音高间来回跳）
+    step_cost: float = 0.04      # 每跨一个半音额外的代价
+    voice_cost: float = 0.8      # 有声 ↔ 无声切换的代价
+    reattack: float = 0.5        # 同一音高上起音概率出现超过此值的峰 → 切成新音（重复音）
+    min_note_ms: float = 60
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "MelodyParams":
+        p = cls()
+        for k, v in (d or {}).items():
+            if hasattr(p, k) and v is not None:
+                setattr(p, k, type(getattr(p, k))(v))
+        return p
+
+
+HARMONIC_INTERVALS = (12, 19, 24, 28, 31)   # 第 2~6 泛音相对基频的半音数
+
+
+def melody_salience(note: np.ndarray, harmonic_cut: float, intervals=GHOST_INTERVALS) -> np.ndarray:
+    """压掉泛音后的显著度：若低 12/19/24（可选 28/31）半音处也在响，本音高很可能只是它的泛音。"""
+    s = note.copy()
+    lower = np.zeros_like(note)
+    for iv in intervals:
+        lower[:, iv:] = np.maximum(lower[:, iv:], note[:, :-iv])
+    s *= np.clip(1 - harmonic_cut * lower / np.maximum(note, 1e-6), 0.1, 1)
+    return s
+
+
+def decode_melody(out: dict, params: MelodyParams | None = None) -> list[dict]:
+    """Viterbi 选出一条单音旋律路径（88 个音高 + 无声），再按换音 / 重复起音切成音符。"""
+    p = params or MelodyParams()
+    note, onset = out["note"], out["onset"]
+    n_frames, n_bins = note.shape
+    sal = melody_salience(note, p.harmonic_cut)
+    eps = 1e-4
+    emit = np.log(np.maximum(sal, eps))                     # 有声状态的得分
+    sil = np.log(p.voicing) * np.ones(n_frames)             # 无声状态：恒定得分 = 阈值
+    dist = np.abs(np.arange(n_bins)[:, None] - np.arange(n_bins)[None, :])
+    trans = -(p.jump_cost + p.step_cost * dist)              # 音高 → 音高
+    np.fill_diagonal(trans, 0.0)
+
+    score = np.concatenate([emit[0], [sil[0]]])
+    back = np.zeros((n_frames, n_bins + 1), dtype=np.int16)
+    for t in range(1, n_frames):
+        prev_p = score[:n_bins]
+        cand = prev_p[None, :] + trans                       # [到, 从]
+        best_from = np.argmax(cand, axis=1)
+        best_pp = cand[np.arange(n_bins), best_from]
+        from_sil = score[n_bins] - p.voice_cost
+        use_sil = from_sil > best_pp
+        new_p = np.where(use_sil, from_sil, best_pp) + emit[t]
+        back[t, :n_bins] = np.where(use_sil, n_bins, best_from)
+        best_p_any = int(np.argmax(prev_p))
+        stay_sil = score[n_bins]
+        from_p = prev_p[best_p_any] - p.voice_cost
+        if stay_sil >= from_p:
+            new_s, back[t, n_bins] = stay_sil + sil[t], n_bins
+        else:
+            new_s, back[t, n_bins] = from_p + sil[t], best_p_any
+        score = np.concatenate([new_p, [new_s]])
+    path = np.empty(n_frames, dtype=np.int16)
+    path[-1] = int(np.argmax(score))
+    for t in range(n_frames - 1, 0, -1):
+        path[t - 1] = back[t, path[t]]
+
+    T = frame_times(n_frames)
+    min_len = max(2, int(round(p.min_note_ms / 1000 * FPS)))
+    notes, t = [], 0
+    while t < n_frames:
+        k = int(path[t])
+        if k == n_bins:
+            t += 1
+            continue
+        s = t
+        while t < n_frames and path[t] == k:
+            t += 1
+        # 同一音高上的重复起音：onset 局部峰值 > reattack 处切开
+        cuts = [s]
+        col = onset[s:t, k]
+        for i in range(1, len(col) - 1):
+            if col[i] > p.reattack and col[i] >= col[i - 1] and col[i] >= col[i + 1] and i - (cuts[-1] - s) >= min_len:
+                cuts.append(s + i)
+        cuts.append(t)
+        for a, b in zip(cuts[:-1], cuts[1:]):
+            if b - a >= min_len:
+                notes.append({"start": float(T[a]), "end": float(T[min(b, n_frames - 1)]), "pitch": k + MIDI_OFFSET,
+                              "amp": float(note[a:b, k].mean()), "cents": 0.0})
+    for n in notes:
+        n["velocity"] = int(np.clip(30 + n["amp"] * 160, 20, 127))
+        n["confidence"] = round(n.pop("amp"), 3)
+    return notes
+
+
+def fuse_melody(mono_notes: list[dict], poly_notes: list[dict], pitch_curve: dict | None,
+                max_overlap: float = 0.3) -> tuple[list[dict], dict]:
+    """单旋律素材（人声、独奏）的融合：以 pYIN 单音结果为主干（对独唱非常可靠，几乎不出错），
+    再用复音模型的音符补上 pYIN 漏掉的地方（气声、弱起音、快速音节）。
+
+    复音音符被采纳的条件：
+    1. 与任何 pYIN 音符在时间上的重叠 < 30%（同一时刻只有一个音：重叠却不同音高的，多半是泛音）；
+    2. pYIN 在这段时间里没有“明确是别的音高”的证据（有声帧里与它相差 > 1 半音的不超过一半）。"""
+    hop = pitch_curve["hop_sec"] if pitch_curve else None
+    curve = np.array([np.nan if v is None else v for v in pitch_curve["midi"]]) if pitch_curve else None
+    added = []
+    for n in poly_notes:
+        dur = n["end"] - n["start"]
+        if dur <= 0:
+            continue
+        ov = sum(max(0.0, min(n["end"], m["end"]) - max(n["start"], m["start"])) for m in mono_notes)
+        if ov >= max_overlap * dur:
+            continue
+        if curve is not None:
+            seg = curve[int(n["start"] / hop): int(n["end"] / hop) + 1]
+            seg = seg[~np.isnan(seg)]
+            if len(seg) >= 3 and np.mean(np.abs(seg - n["pitch"]) <= 1) < 0.5:
+                continue
+        added.append(dict(n, source="poly"))
+    for m in mono_notes:
+        m.setdefault("source", "pyin")
+    fused = sorted(mono_notes + added, key=lambda x: (x["start"], x["pitch"]))
+    return fused, {"pyin": len(mono_notes), "poly_added": len(added), "poly_total": len(poly_notes)}
+
+
+def monophony_ratio(out: dict, thresh: float = 0.4) -> float:
+    """有声帧里“同时有两个以上非泛音关系的音在响”的比例；单旋律素材（人声、独奏）很低。"""
+    note = out["note"]
+    sal = melody_salience(note, 0.9, HARMONIC_INTERVALS)
+    active = sal > thresh
+    voiced = active.any(axis=1)
+    if not voiced.any():
+        return 0.0
+    multi = active.sum(axis=1) >= 2
+    return float(multi[voiced].mean())
+
+
 def estimate_polyphony(y: np.ndarray, sr: int) -> float:
     """粗估同时发声的音级数（色度图中显著音级个数的中位数），用于自动选择引擎。"""
     import librosa
