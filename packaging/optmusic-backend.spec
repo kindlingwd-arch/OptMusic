@@ -11,16 +11,23 @@ datas = [(str(ROOT / "web"), "web")]
 # librosa 通过 lazy_loader 读取 __init__.pyi 存根来延迟导入子模块，必须带上 .pyi 和数据文件
 datas += collect_data_files("librosa", include_py_files=False)
 datas += collect_data_files("lazy_loader")
+# 复音引擎：只带 ONNX 模型（不需要 TensorFlow / CoreML / TFLite 版本）
+import basic_pitch
+_bp_model = Path(basic_pitch.__file__).parent / "saved_models" / "icassp_2022" / "nmp.onnx"
+datas += [(str(_bp_model), "basic_pitch/saved_models/icassp_2022")]
+datas += collect_data_files("pretty_midi")     # 自带的音色/乐器名表
 
 hiddenimports = []
 hiddenimports += collect_submodules("librosa")
 hiddenimports += collect_submodules("uvicorn")
 hiddenimports += collect_submodules("pedalboard")   # 渲染 MIDI 时动态导入 pedalboard.midi_utils
 hiddenimports += collect_submodules("mido")
+hiddenimports += collect_submodules("basic_pitch") + collect_submodules("mir_eval")
+hiddenimports += ["onnxruntime", "pretty_midi", "resampy", "optmusic.poly"]
 hiddenimports += ["optmusic.server", "optmusic.analysis", "optmusic.harmony",
                   "optmusic.host", "optmusic.midi_export", "multipart", "python_multipart"]
 
-excludes = ["tkinter", "matplotlib", "IPython", "jupyter", "pytest", "webview", "clr",
+excludes = ["tkinter", "matplotlib", "tensorflow", "coremltools", "tflite_runtime", "IPython", "jupyter", "pytest", "webview", "clr",
             "pythonnet", "PyInstaller", "notebook", "pandas"]
 
 a = Analysis(

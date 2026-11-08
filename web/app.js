@@ -17,6 +17,7 @@ const S = {
   grid: { bpm: 120, beats_per_bar: 4, origin: 0, beat_times: [], confidence: 0 },
   key: null, chords: [],
   curve: null,
+  engine: null, activation: null, heatCanvas: null,
   view: { pps: 120, scrollX: 0, rowH: 14, scrollY: 0 },
   sel: new Set(),
   checks: {},
@@ -129,6 +130,7 @@ function render() {
     if (p % 12 === 0) { g.fillStyle = "#3a404d"; g.fillRect(KB, y + rowH - 1, W - KB, 1); }
   }
   drawGridLines(TOP, H, t0, t1);
+  drawHeat(t0, t1);
 
   // ---- 音符
   g.font = "11px Segoe UI, Microsoft YaHei";
@@ -599,6 +601,7 @@ $("fileInput").onchange = async e => {
     S.duration = S.audioBuf.duration;
     S.peaks = computePeaks(S.audioBuf);
     S.notes = []; S.checks = {}; S.sel.clear(); S.curve = null; S.chords = []; S.key = null;
+    S.engine = null; setActivation(null); $("polySection").hidden = true;
     S.undo = []; S.redo = []; S.vstBuf = null; S.vstDirty = true; S.playhead = 0;
     S.view.scrollX = 0; S.view.pps = Math.max(20, (W - KB) / Math.min(S.duration, 20));
     $("fileName").textContent = f.name; $("btnAnalyze").disabled = false;
@@ -615,11 +618,14 @@ async function analyze() {
   busy("正在识别音高、切分音符、检测 BPM 与小节…（长音频可能需要几十秒）");
   try {
     const meter = $("selMeter").value;
-    const res = await api("/api/analyze", { id: S.project, mode: $("selMode").value, beats_per_bar: meter ? parseInt(meter) : null });
+    const res = await api("/api/analyze", { id: S.project, mode: $("selMode").value,
+      beats_per_bar: meter ? parseInt(meter) : null, poly_params: polyParams() });
     pushUndo();
-    S.notes = res.notes.map(n => ({ id: n.id, start: n.start, end: n.end, pitch: n.pitch, velocity: n.velocity,
-      measured: n.pitch + (n.cents || 0) / 100, confidence: n.confidence }));
+    S.notes = res.notes.map(toNote);
     S.nextId = S.notes.length + 1;
+    S.engine = res.engine;
+    setActivation(res.activation);
+    $("polySection").hidden = res.engine !== "poly";
     S.grid = res.grid; S.curve = res.pitch_curve; S.key = res.key; S.chords = res.chords || [];
     S.checks = {}; S.sel.clear(); S.vstDirty = true;
     if (S.notes.length) {
@@ -628,12 +634,96 @@ async function analyze() {
       S.view.scrollY = (HI - mid) * S.view.rowH - (H - TOP) / 2;
     }
     clampScroll(); updateGridUI(); updateNoteInfo(); updateCheckSummary(); draw();
-    status(`识别完成：${S.notes.length} 个音符，${S.grid.bpm.toFixed(2)} BPM，${S.grid.beats_per_bar} 拍/小节` +
+    const eng = res.engine === "poly" ? "复音引擎" : "单音引擎";
+    const why = res.polyphony != null ? `（自动：同时发声约 ${res.polyphony} 个音级）` : "";
+    status(`${eng}${why}识别完成：${S.notes.length} 个音符，${S.grid.bpm.toFixed(2)} BPM，${S.grid.beats_per_bar} 拍/小节` +
       (S.key ? `，调性 ${S.key.name}` : "") + `，用时 ${res.elapsed}s`);
   } catch (err) { status("分析失败：" + err.message, true); }
   finally { busy(null); }
 }
 $("btnAnalyze").onclick = analyze;
+
+function toNote(n) {
+  return { id: n.id, start: n.start, end: n.end, pitch: n.pitch, velocity: n.velocity,
+    measured: n.pitch + (n.cents || 0) / 100, confidence: n.confidence };
+}
+
+// ---- 复音参数面板
+const POLY_UI = [ // [输入框 id, 参数名, 显示格式]
+  ["ppOnset", "onset_thresh", v => v.toFixed(2)],
+  ["ppFrame", "frame_thresh", v => v.toFixed(2)],
+  ["ppMin", "min_note_ms", v => v.toFixed(0)],
+  ["ppReattack", "reattack", v => v.toFixed(2)],
+  ["ppGhost", "ghost_ratio", v => v.toFixed(2)],
+];
+let polyDefaults = {};
+function polyParams() {
+  const p = {};
+  POLY_UI.forEach(([id, key]) => { if ($(id).value !== "") p[key] = parseFloat($(id).value); });
+  return p;
+}
+function setPolyUI(params) {
+  POLY_UI.forEach(([id, key, fmt]) => {
+    if (params[key] == null) return;
+    $(id).value = params[key];
+    $(id).nextElementSibling.textContent = fmt(parseFloat(params[key]));
+  });
+}
+let polyTimer = null;
+POLY_UI.forEach(([id, , fmt]) => {
+  $(id).addEventListener("input", () => {
+    $(id).nextElementSibling.textContent = fmt(parseFloat($(id).value));
+    clearTimeout(polyTimer); polyTimer = setTimeout(retranscribe, 250);
+  });
+});
+$("btnPolyReset").onclick = () => { setPolyUI(polyDefaults); retranscribe(); };
+$("chkHeat").onchange = draw;
+
+async function retranscribe() {
+  if (!S.project || S.engine !== "poly") return;
+  try {
+    const r = await api("/api/retranscribe", { id: S.project, poly_params: polyParams() });
+    pushUndo();
+    S.notes = r.notes.map(toNote); S.nextId = S.notes.length + 1;
+    S.sel.clear(); S.checks = {};
+    $("polyStats").textContent = `模型 ${r.stats.raw} → 合并 ${r.stats.after_merge} → 去泛音 ${r.stats.final}`;
+    notesChanged();
+    status(`已按新参数重新生成：${S.notes.length} 个音符（${r.elapsed}s）`);
+  } catch (err) { status("重新生成失败：" + err.message, true); }
+}
+
+// ---- 模型热度图：每个音高“正在响”的概率（背景），帮助判断漏音 / 多音
+function setActivation(act) {
+  S.activation = null; S.heatCanvas = null;
+  if (!act) return;
+  const bin = atob(act.data), n = act.frames, b = act.bins;
+  const cv = document.createElement("canvas"); cv.width = n; cv.height = b;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(n, b);
+  for (let t = 0; t < n; t++) {
+    for (let k = 0; k < b; k++) {
+      const v = bin.charCodeAt(t * b + k);
+      const o = ((b - 1 - k) * n + t) * 4;       // 高音在上
+      img.data[o] = 255; img.data[o + 1] = 170; img.data[o + 2] = 60;
+      img.data[o + 3] = v < 45 ? 0 : Math.min(255, (v - 45) * 1.6);   // 概率 < 0.18 不画
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  S.activation = act; S.heatCanvas = cv;
+}
+function drawHeat(t0, t1) {
+  const a = S.activation;
+  if (!a || !S.heatCanvas || !$("chkHeat").checked) return;
+  const off = a.t0 || 0;
+  const f0 = Math.max(0, Math.floor((t0 - off) * a.fps)), f1 = Math.min(a.frames, Math.ceil((t1 - off) * a.fps) + 1);
+  if (f1 <= f0) return;
+  const topPitch = a.lo + a.bins - 1;
+  g.save();
+  g.globalAlpha = 0.8;
+  g.imageSmoothingEnabled = true;
+  g.drawImage(S.heatCanvas, f0, 0, f1 - f0, a.bins,
+    tx(off + f0 / a.fps), py(topPitch), (f1 - f0) / a.fps * S.view.pps, a.bins * S.view.rowH);
+  g.restore();
+}
 
 async function refreshHarmony() {
   if (!S.notes.length) { S.chords = []; draw(); return; }
@@ -832,6 +922,7 @@ resize();
 loadPluginList().catch(err => status("插件列表获取失败：" + err.message, true));
 api("/api/capabilities").then(c => {
   if (!c.poly) { const o = $("selMode").querySelector('option[value="poly"]'); o.disabled = true; o.textContent += "（未安装）"; }
+  if (c.poly_defaults) { polyDefaults = c.poly_defaults; setPolyUI(polyDefaults); }
 }).catch(() => { });
 S.view.scrollY = (HI - 72) * S.view.rowH;
 updateGridUI(); updateCheckSummary();

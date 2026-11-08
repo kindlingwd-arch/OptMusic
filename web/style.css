@@ -67,3 +67,8 @@ main { flex: 1; display: flex; min-height: 0; }
 .spinner { width: 36px; height: 36px; border: 3px solid var(--line); border-top-color: var(--accent);
   border-radius: 50%; animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.slider { display: grid; grid-template-columns: 92px 1fr 40px; align-items: center; gap: 6px; margin-top: 6px; }
+.slider input[type=range] { width: 100%; }
+.slider output { color: var(--text); font-family: Consolas, monospace; font-size: 12px; text-align: right; }
+#side section[hidden] { display: none; }

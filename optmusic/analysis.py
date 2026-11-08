@@ -238,37 +238,6 @@ def transcribe_mono(y: np.ndarray, sr: int = SR, fmin: float = 65.0, fmax: float
 
 
 # ---------------------------------------------------------------------------
-# 复音模式（可选，依赖 basic-pitch）
-# ---------------------------------------------------------------------------
-
-def poly_available() -> bool:
-    try:
-        import basic_pitch  # noqa: F401
-        return True
-    except Exception:
-        return False
-
-
-def transcribe_poly(path: str):
-    from basic_pitch import ICASSP_2022_MODEL_PATH
-    from basic_pitch.inference import predict
-
-    _, _, note_events = predict(path, ICASSP_2022_MODEL_PATH)
-    notes = []
-    for start, end, pitch, amp, bends in note_events:
-        cents = 0.0
-        if bends is not None and len(bends):
-            cents = round(float(np.median(bends)) / 3 * 100, 1)  # basic-pitch: 1/3 半音分辨率
-        notes.append({
-            "start": float(start), "end": float(end), "pitch": int(pitch),
-            "cents": cents, "velocity": int(np.clip(amp * 127, 20, 127)),
-            "confidence": round(float(amp), 3),
-        })
-    notes.sort(key=lambda n: (n["start"], n["pitch"]))
-    return notes
-
-
-# ---------------------------------------------------------------------------
 # 对比：原声片段与 VST 渲染的频谱相似度（检测八度 / 半音错误）
 # ---------------------------------------------------------------------------
 

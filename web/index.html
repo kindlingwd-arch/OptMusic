@@ -19,8 +19,9 @@
   <div class="group">
     <label>识别
       <select id="selMode">
+        <option value="auto" selected>自动</option>
         <option value="mono">单音旋律</option>
-        <option value="poly">复音（需 basic-pitch）</option>
+        <option value="poly">复音（和弦/钢琴）</option>
       </select>
     </label>
     <label>拍号
@@ -80,6 +81,24 @@
         <button id="btnRescan" title="重新扫描插件">↻</button>
       </div>
       <div id="pluginStatus" class="muted">当前：内置合成器</div>
+    </section>
+
+    <section id="polySection" hidden>
+      <h3>复音识别参数 <span id="polyStats" class="muted"></span></h3>
+      <label class="slider" title="起音概率超过此值才算一个新音。越低越灵敏（音符更多，误报也更多）">起音灵敏度
+        <input id="ppOnset" type="range" min="0.2" max="0.8" step="0.05"><output></output></label>
+      <label class="slider" title="“正在响”的概率高于此值音符才持续。越低音符越长、弱音越多">持续灵敏度
+        <input id="ppFrame" type="range" min="0.1" max="0.6" step="0.05"><output></output></label>
+      <label class="slider" title="短于此长度的音符会被丢弃">最短音符(ms)
+        <input id="ppMin" type="range" min="30" max="250" step="10"><output></output></label>
+      <label class="slider" title="同音高的碎片：间隙处起音概率低于此值就合并为一个长音。0 = 不合并">合并碎片
+        <input id="ppReattack" type="range" min="0" max="0.8" step="0.05"><output></output></label>
+      <label class="slider" title="与更强的低八度/十二度音同时出现、且比它弱到此比例以下的音视为泛音删除。0 = 不删除">去泛音
+        <input id="ppGhost" type="range" min="0" max="1" step="0.05"><output></output></label>
+      <div class="row">
+        <label><input id="chkHeat" type="checkbox" checked> 显示模型热度图</label>
+        <button id="btnPolyReset">恢复默认</button>
+      </div>
     </section>
 
     <section>

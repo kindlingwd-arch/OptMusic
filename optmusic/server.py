@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, harmony
+from . import analysis, harmony, poly
 from .host import BUILTIN, RENDER_SR, EditorOpen, PluginHost, scan_vst3
 from .midi_export import export_midi
 
@@ -93,36 +93,91 @@ def create_app(host: PluginHost) -> FastAPI:
 
     class AnalyzeReq(BaseModel):
         id: str
-        mode: str = "mono"             # mono | poly
+        mode: str = "auto"             # auto | mono | poly
         beats_per_bar: int | None = None
         fmin: float = 65.0
         fmax: float = 1400.0
         min_note: float = 0.07
+        poly_params: dict | None = None
+
+    poly_cache: dict[str, dict] = {}
+
+    def poly_output(pid: str) -> dict:
+        """复音模型输出：内存 → 磁盘缓存 → 运行模型。"""
+        if pid in poly_cache:
+            return poly_cache[pid]
+        npz = WORK / pid / "basicpitch.npz"
+        out = poly.load_output(npz)
+        if out is None:
+            out = poly.infer(str(audio_path(pid)))
+            poly.save_output(out, npz)
+        poly_cache.clear()
+        poly_cache[pid] = out
+        return out
+
+    def activation_payload(out: dict) -> dict:
+        """把“正在响”的概率图压缩成 uint8 + base64，前端画成热度图（每 2 帧取最大值）。"""
+        import base64
+        a = out["note"]
+        if len(a) % 2:
+            a = np.vstack([a, a[-1:]])
+        a = a.reshape(-1, 2, a.shape[1]).max(axis=1)
+        q = np.clip(a * 255, 0, 255).astype(np.uint8)
+        T = poly.frame_times(len(out["note"]))
+        fps_eff = (len(T) - 1) / max(1e-6, float(T[-1] - T[0]))   # 线性近似（误差 < 10 ms）
+        return {"fps": fps_eff / 2, "t0": float(T[0]), "lo": poly.MIDI_OFFSET, "bins": int(q.shape[1]),
+                "frames": int(q.shape[0]), "data": base64.b64encode(q.tobytes()).decode()}
+
+    def number(notes):
+        for i, n in enumerate(notes):
+            n["id"] = i + 1
+            n["start"] = round(n["start"], 4)
+            n["end"] = round(n["end"], 4)
+        return notes
 
     @app.post("/api/analyze")
     def analyze(req: AnalyzeReq):
         def run():
             t0 = time.time()
             y = get_audio(req.id)
-            curve = None
-            if req.mode == "poly":
-                if not analysis.poly_available():
-                    raise HTTPException(400, "复音模式需要安装 basic-pitch")
-                notes = analysis.transcribe_poly(str(audio_path(req.id)))
+            curve, activation, polyphony = None, None, None
+            mode = req.mode
+            if mode == "auto":
+                polyphony = poly.estimate_polyphony(y, analysis.SR)
+                mode = "poly" if polyphony >= 2 and poly.available() else "mono"
+            if mode == "poly":
+                if not poly.available():
+                    raise HTTPException(400, "复音引擎不可用（缺少 basic-pitch / onnxruntime）")
+                out = poly_output(req.id)
+                notes = poly.decode(out, poly.PolyParams.from_dict(req.poly_params))
+                activation = activation_payload(out)
             else:
                 notes, curve = analysis.transcribe_mono(
                     y, fmin=req.fmin, fmax=req.fmax, min_note=req.min_note)
             grid = analysis.estimate_grid(y, beats_per_bar=req.beats_per_bar,
                                           note_onsets=[n["start"] for n in notes])
-            for i, n in enumerate(notes):
-                n["id"] = i + 1
-                n["start"] = round(n["start"], 4)
-                n["end"] = round(n["end"], 4)
+            number(notes)
             key, chords = harmony.analyze_harmony(notes, grid.bpm, grid.beats_per_bar, grid.origin,
                                                   audio_chroma(req.id))
             return {"notes": notes, "grid": grid.to_dict(), "pitch_curve": curve,
+                    "activation": activation, "engine": mode, "polyphony": polyphony,
+                    "poly_params": poly.PolyParams.from_dict(req.poly_params).to_dict(),
                     "key": key, "chords": chords,
                     "duration": len(y) / analysis.SR, "elapsed": round(time.time() - t0, 2)}
+        return guard(run)
+
+    class RetranscribeReq(BaseModel):
+        id: str
+        poly_params: dict | None = None
+
+    @app.post("/api/retranscribe")
+    def retranscribe(req: RetranscribeReq):
+        """只用新参数重新解码复音模型输出（模型不重跑，通常 < 1 秒）。"""
+        def run():
+            t0 = time.time()
+            stats = {}
+            notes = poly.decode(poly_output(req.id), poly.PolyParams.from_dict(req.poly_params), stats)
+            return {"notes": number(notes), "stats": stats, "elapsed": round(time.time() - t0, 2)}
         return guard(run)
 
     class HarmonyReq(BaseModel):
@@ -142,7 +197,7 @@ def create_app(host: PluginHost) -> FastAPI:
 
     @app.get("/api/capabilities")
     def capabilities():
-        return {"poly": analysis.poly_available()}
+        return {"poly": poly.available(), "poly_defaults": poly.PolyParams().to_dict()}
 
     # ------------------------------------------------------------------ 插件
     @app.get("/api/plugins")

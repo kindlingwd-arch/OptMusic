@@ -56,6 +56,7 @@ npm start
 ```bash
 uv venv --python 3.12 .venv
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt
+uv pip install --python .venv\Scripts\python.exe --no-deps basic-pitch==0.4.0
 ```
 
 启动并用浏览器打开：
@@ -112,7 +113,7 @@ tests/                 合成音频端到端自测
 
 ## 已知限制（v0.1）
 
-- 单音模式适合人声、独奏乐器；和声音频需复音模式（basic-pitch，需 Python 3.11 环境）。
+- 识别引擎自动选择：单音（人声、独奏）用 pYIN，和弦/钢琴/伴奏用复音模型 basic-pitch（ONNX）。复音模式对弦乐等缓慢起音乐器召回偏低，详见算法文档 1.6。
 - 恒定速度假设，变速歌曲网格会逐渐偏离。
 - 只支持 VST3（pedalboard 不支持 VST2）。本机实测：Surge XT、PAPU、BBC Symphony Orchestra 可用；Pianoteq 6 STAGE 离线渲染无声。
 - 桌面版未做代码签名，首次运行时 Windows SmartScreen 可能提示“未知发布者”，选择“仍要运行”即可。
