@@ -151,3 +151,6 @@ vite.config.ts.timestamp-*
 # OptMusic
 workspace/
 .claude/
+__pycache__/
+*.pyc
+.venv/
