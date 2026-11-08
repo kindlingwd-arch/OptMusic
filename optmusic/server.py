@@ -106,17 +106,30 @@ def create_app(host: PluginHost) -> FastAPI:
     MELODY_RATIO = 0.18      # 多音比例低于此值判为单旋律（实测：独唱 0.06，合成旋律+鼓 0.15，和弦伴奏 0.25，复音合成 0.52+）
     mono_cache: dict[tuple, tuple] = {}
 
-    def mono_result(pid: str, fmin=65.0, fmax=1400.0, min_note=0.07):
-        key = (pid, fmin, fmax, min_note)
+    # 单旋律引擎的默认值与复音引擎不同（人声起音软、音节短，见算法文档 1.5.4）
+    MELODY_VOICED_MIN = 0.02     # pYIN 置信度下限（复音 / 仅 pYIN 引擎为 0.25）
+    MELODY_POLY_DEFAULTS = {"min_note_ms": 50}
+
+    def engine_defaults(engine: str) -> dict:
+        d = poly.PolyParams().to_dict()
+        if engine == "melody":
+            d.update(MELODY_POLY_DEFAULTS)
+        return d
+
+    def mono_result(pid: str, fmin=65.0, fmax=1400.0, min_note=0.07, voiced_min=0.25):
+        key = (pid, fmin, fmax, min_note, voiced_min)
         if key not in mono_cache:
-            mono_cache.clear()
-            mono_cache[key] = analysis.transcribe_mono(get_audio(pid), fmin=fmin, fmax=fmax, min_note=min_note)
+            if len(mono_cache) > 4:
+                mono_cache.clear()
+            mono_cache[key] = analysis.transcribe_mono(get_audio(pid), fmin=fmin, fmax=fmax, min_note=min_note,
+                                                       voiced_prob_min=voiced_min)
         return mono_cache[key]
 
     def melody_notes(pid: str, poly_params: dict | None):
         """单旋律（人声 / 独奏）：pYIN 为主干 + 复音模型补漏。"""
-        mono_notes, curve = mono_result(pid)
-        pn = poly.decode(poly_output(pid), poly.PolyParams.from_dict(poly_params))
+        mono_notes, curve = mono_result(pid, voiced_min=MELODY_VOICED_MIN)
+        params = engine_defaults("melody") | (poly_params or {})
+        pn = poly.decode(poly_output(pid), poly.PolyParams.from_dict(params))
         notes, st = poly.fuse_melody([dict(n) for n in mono_notes], pn, curve)
         added = [n for n in notes if n.get("source") == "poly"]
         analysis.refine_cents(get_audio(pid), analysis.SR, added)
@@ -180,10 +193,12 @@ def create_app(host: PluginHost) -> FastAPI:
             if mode in ("poly", "melody"):
                 out = poly_output(req.id)
                 activation = activation_payload(out)
-            if mode in ("mono", "melody"):
+            if mode == "mono":
                 mono_notes, curve = mono_result(req.id, req.fmin, req.fmax, req.min_note)
+            elif mode == "melody":
+                _, curve = mono_result(req.id, voiced_min=MELODY_VOICED_MIN)
             if mode == "poly":
-                notes = poly.decode(out, poly.PolyParams.from_dict(req.poly_params), stats)
+                notes = poly.decode(out, poly.PolyParams.from_dict(engine_defaults("poly") | (req.poly_params or {})), stats)
                 analysis.refine_cents(y, analysis.SR, notes)   # 复音：用频谱峰值测精确音分
             elif mode == "melody":
                 notes, stats = melody_notes(req.id, req.poly_params)
@@ -196,7 +211,8 @@ def create_app(host: PluginHost) -> FastAPI:
                                                   audio_chroma(req.id))
             return {"notes": notes, "grid": grid.to_dict(), "pitch_curve": curve,
                     "activation": activation, "engine": mode, "polyphony": polyphony, "stats": stats,
-                    "poly_params": poly.PolyParams.from_dict(req.poly_params).to_dict(),
+                    "poly_params": engine_defaults(mode) | (req.poly_params or {}),
+                    "poly_defaults": engine_defaults(mode),
                     "key": key, "chords": chords, "tuning_cents": round(tuning(req.id), 1),
                     "duration": len(y) / analysis.SR, "elapsed": round(time.time() - t0, 2)}
         return guard(run)

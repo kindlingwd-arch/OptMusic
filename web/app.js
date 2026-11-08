@@ -707,7 +707,7 @@ async function analyze() {
   try {
     const meter = $("selMeter").value;
     const res = await api("/api/analyze", { id: S.project, mode: $("selMode").value,
-      beats_per_bar: meter ? parseInt(meter) : null, poly_params: polyParams() });
+      beats_per_bar: meter ? parseInt(meter) : null, poly_params: polyTouched ? polyParams() : null });
     pushUndo();
     S.notes = res.notes.map(toNote);
     S.nextId = S.notes.length + 1;
@@ -715,6 +715,8 @@ async function analyze() {
     setActivation(res.activation);
     $("polySection").hidden = !["poly", "melody"].includes(res.engine);
     showPolyStats(res.engine, res.stats);
+    if (res.poly_defaults) polyDefaults = res.poly_defaults;      // 不同引擎默认值不同
+    if (res.poly_params) setPolyUI(res.poly_params);
     S.grid = res.grid; S.curve = res.pitch_curve; S.key = res.key; S.chords = res.chords || [];
     S.tuning = res.tuning_cents;
     S.checks = {}; S.sel.clear(); S.vstDirty = true;
@@ -748,6 +750,7 @@ const POLY_UI = [ // [输入框 id, 参数名, 显示格式]
   ["ppGhost", "ghost_ratio", v => v.toFixed(2)],
 ];
 let polyDefaults = {};
+let polyTouched = false;      // 用户是否手动改过复音参数（没改过就让后端按引擎用各自的默认值）
 function polyParams() {
   const p = {};
   POLY_UI.forEach(([id, key]) => { if ($(id).value !== "") p[key] = parseFloat($(id).value); });
@@ -764,10 +767,11 @@ let polyTimer = null;
 POLY_UI.forEach(([id, , fmt]) => {
   $(id).addEventListener("input", () => {
     $(id).nextElementSibling.textContent = fmt(parseFloat($(id).value));
+    polyTouched = true;
     clearTimeout(polyTimer); polyTimer = setTimeout(retranscribe, 250);
   });
 });
-$("btnPolyReset").onclick = () => { setPolyUI(polyDefaults); retranscribe(); };
+$("btnPolyReset").onclick = () => { polyTouched = false; setPolyUI(polyDefaults); retranscribe(); };
 $("chkHeat").onchange = draw;
 
 function showPolyStats(engine, st) {
