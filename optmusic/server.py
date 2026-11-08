@@ -1,6 +1,8 @@
 """FastAPI 服务：上传 / 分析 / 插件 / 渲染 / 校验 / 导出。"""
 
 import io
+import os
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -17,10 +19,15 @@ from . import analysis, harmony
 from .host import BUILTIN, RENDER_SR, EditorOpen, PluginHost, scan_vst3
 from .midi_export import export_midi
 
-ROOT = Path(__file__).resolve().parent.parent
-WEB = ROOT / "web"
-WORK = ROOT / "workspace"
-WORK.mkdir(exist_ok=True)
+if getattr(sys, "frozen", False):
+    # PyInstaller 打包后：界面文件在解包目录，工作区放到用户目录（程序目录可能不可写）
+    WEB = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "web"
+    WORK = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "OptMusic" / "workspace"
+else:
+    ROOT = Path(__file__).resolve().parent.parent
+    WEB = ROOT / "web"
+    WORK = ROOT / "workspace"
+WORK.mkdir(parents=True, exist_ok=True)
 
 
 def create_app(host: PluginHost) -> FastAPI:

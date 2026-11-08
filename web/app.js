@@ -768,9 +768,16 @@ $("btnExport").onclick = async () => {
     const name = ($("fileName").textContent || "OptMusic").replace(/\.[^.]+$/, "");
     const r = await api("/api/export/midi", { notes: S.notes, bpm: S.grid.bpm, beats_per_bar: S.grid.beats_per_bar,
       origin: S.grid.origin, align: $("selAlign").value, name }, true);
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(await r.blob()); a.download = name + ".mid"; a.click();
-    status("已导出 " + name + ".mid");
+    const blob = await r.blob();
+    if (window.optmusic?.saveFile) {
+      // 桌面版（Electron）：系统“另存为”对话框
+      const saved = await window.optmusic.saveFile(name + ".mid", new Uint8Array(await blob.arrayBuffer()));
+      status(saved ? "已导出 " + saved : "已取消导出");
+    } else {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = name + ".mid"; a.click();
+      status("已导出 " + name + ".mid");
+    }
   } catch (err) { status("导出失败：" + err.message, true); }
 };
 

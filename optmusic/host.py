@@ -58,10 +58,14 @@ class PluginHost:
         self.plugin_path: str | None = None
         self.plugin_name: str = BUILTIN
         self.editor_open = False
-        self._lock = threading.Lock()  # 保证同一时间只有一个调用方在排队等结果
         self.state_version = 0         # 插件或音色变化时递增，用于前端/缓存失效
+        self._editor_close = threading.Event()
 
-    # ---------------- 主线程循环 ----------------
+    def shutdown(self):
+        """退出程序时关闭仍然打开的插件窗口。"""
+        self._editor_close.set()
+
+    # ---------------- 宿主线程循环（主线程或专用线程，所有插件操作都在这一个线程上） ----------------
     def run_forever(self, stop: threading.Event):
         while not stop.is_set():
             try:
@@ -131,8 +135,9 @@ class PluginHost:
 
         def _show():
             self.editor_open = True
+            self._editor_close.clear()
             try:
-                self.plugin.show_editor()  # 阻塞直到用户关闭窗口
+                self.plugin.show_editor(self._editor_close)  # 阻塞直到用户关闭窗口
             finally:
                 self.editor_open = False
                 self.state_version += 1     # 音色可能被修改

@@ -5,4 +5,4 @@ if not exist .venv\Scripts\python.exe (
   pause
   exit /b 1
 )
-.venv\Scripts\python.exe run.py
+.venv\Scripts\python.exe run.py --open

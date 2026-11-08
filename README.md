@@ -9,7 +9,47 @@
 
 算法原理见 **[docs/算法原理.md](docs/算法原理.md)**。
 
-## 运行
+## 桌面版（推荐）
+
+桌面版 = **Electron 外壳（TypeScript，`desktop/`）+ Python 后端（音频分析 + VST 宿主）**。
+双击 `OptMusic.exe` 即可使用，无需安装 Python：
+
+![桌面版界面](docs/images/desktop.png)
+
+- 启动时先显示“启动中”页面，后端就绪（约 5~15 秒）后进入主界面；
+- 第一次分析需要编译加速代码（约 1 分钟，启动后会在后台预热），之后每次只需几秒；
+- 关闭窗口时后端进程会一起退出；日志在 菜单「文件 → 打开日志目录」。
+
+### 打包桌面版
+
+前置：已按下文创建 Python 虚拟环境，并安装 Node.js。
+
+```bash
+cd desktop
+npm install
+npm run dist
+```
+
+产物：`desktop/release/win-unpacked/OptMusic.exe`（整个 `win-unpacked` 文件夹约 550 MB，可直接压缩发给别人）。
+需要安装包时用 `npm run dist:installer`（NSIS）。
+
+构建步骤：`tsc` 编译外壳 → PyInstaller 按 `packaging/optmusic-backend.spec` 把后端打成 `optmusic-backend.exe` → electron-builder 把它放进 `resources/backend/`。
+
+网络较慢时可用国内镜像：
+
+```bash
+set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
+```
+
+开发调试桌面外壳（使用仓库里的 `.venv` 运行后端）：
+
+```bash
+cd desktop
+npm start
+```
+
+## 从源码运行（浏览器版）
 
 需要 Python 3.12（推荐用 [uv](https://docs.astral.sh/uv/)）：
 
@@ -18,10 +58,10 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 ```
 
-启动（会自动打开浏览器 http://127.0.0.1:8765）：
+启动并用浏览器打开：
 
 ```bash
-.venv\Scripts\python.exe run.py
+.venv\Scripts\python.exe run.py --open
 ```
 
 或双击 `start.bat`。
@@ -57,7 +97,9 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 ## 结构
 
 ```
-run.py                 启动入口（Web 服务在后台线程，VST 宿主占用主线程）
+run.py                 后端入口（Web 服务在后台线程，VST 宿主占用主线程；就绪后打印 OPTMUSIC_READY <port>）
+desktop/               Electron 桌面外壳（TypeScript）：窗口、启动后端、另存为对话框、打包配置
+packaging/             PyInstaller 后端打包配置
 optmusic/analysis.py   音高追踪、音符切分、BPM/下拍/拍号、频谱轮廓
 optmusic/harmony.py    调性 / 调号、和弦识别
 optmusic/host.py       VST3 扫描、加载、渲染（pedalboard），内置兜底合成器
@@ -73,3 +115,4 @@ tests/                 合成音频端到端自测
 - 单音模式适合人声、独奏乐器；和声音频需复音模式（basic-pitch，需 Python 3.11 环境）。
 - 恒定速度假设，变速歌曲网格会逐渐偏离。
 - 只支持 VST3（pedalboard 不支持 VST2）。本机实测：Surge XT、PAPU、BBC Symphony Orchestra 可用；Pianoteq 6 STAGE 离线渲染无声。
+- 桌面版未做代码签名，首次运行时 Windows SmartScreen 可能提示“未知发布者”，选择“仍要运行”即可。
