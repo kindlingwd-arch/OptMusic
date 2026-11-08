@@ -268,6 +268,26 @@ def create_app(host: PluginHost) -> FastAPI:
         audio = guard(host.render, events, duration)
         return wav_response(audio)
 
+    class BankReq(BaseModel):
+        pitches: list[int]
+        note: float = 1.5          # 每个音按住的时长
+        spacing: float = 2.2       # 相邻两个音的间隔（含释音）
+        velocity: int = 100
+
+    @app.post("/api/render/bank")
+    def render_bank(req: BankReq):
+        """音色库：把多个音高排在一条轨上一次渲染（单击试听用）。
+        第 i 个音高从 i × spacing 秒开始，前端按此切片缓存，之后单击音符即时发声。"""
+        ps = [int(p) for p in req.pitches if 21 <= int(p) <= 108][:120]
+        if not ps:
+            raise HTTPException(400, "没有音高")
+        events = [(p, req.velocity, i * req.spacing, i * req.spacing + req.note) for i, p in enumerate(ps)]
+        audio = guard(host.render, events, len(ps) * req.spacing + 0.3)
+        r = wav_response(audio)
+        r.headers["X-Bank-Pitches"] = ",".join(map(str, ps))
+        r.headers["X-Bank-Spacing"] = str(req.spacing)
+        return r
+
     # ------------------------------------------------------------------ 校验
     class CheckReq(BaseModel):
         id: str
@@ -317,6 +337,14 @@ def create_app(host: PluginHost) -> FastAPI:
     @app.exception_handler(HTTPException)
     async def http_err(_, exc: HTTPException):
         return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    @app.middleware("http")
+    async def no_cache(request, call_next):
+        # 界面文件不缓存：程序更新后 Electron / 浏览器不会继续用旧的 app.js
+        resp = await call_next(request)
+        if not request.url.path.startswith("/api/"):
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
     app.mount("/", StaticFiles(directory=str(WEB), html=True), name="web")
     return app

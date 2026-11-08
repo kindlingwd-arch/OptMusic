@@ -227,7 +227,13 @@ if (!app.requestSingleInstanceLock()) {
     if (exiting) return;
     exiting = true;
     quitting = true;
-    stopBackend().finally(() => app.exit(0));
+    stopBackend().finally(() => {
+      app.exit(0);
+      // 兜底：实测偶尔 app.exit 之后主进程仍残留（无窗口），3 秒后强制结束
+      setTimeout(() => process.exit(0), 3000).unref();
+    });
+    // 再兜底：后端迟迟不退出时，最多 8 秒后整体强制结束
+    setTimeout(() => { try { backend?.kill(); } catch { /* ignore */ } process.exit(0); }, 8000).unref();
   };
   app.on("before-quit", (e) => { if (!exiting) { e.preventDefault(); shutdown(); } });
   app.on("window-all-closed", shutdown);

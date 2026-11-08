@@ -434,7 +434,8 @@ window.addEventListener("keydown", e => {
   else if (e.ctrlKey && k.toLowerCase() === "a") { e.preventDefault(); S.sel = new Set(S.notes.map(n => n.id)); updateNoteInfo(); draw(); }
   else if (k.toLowerCase() === "q" && !e.ctrlKey) { quantize(); }
   else if (["1", "2", "3", "4"].includes(k) && selNotes.length === 1) {
-    audition(selNotes[0], { 1: "orig", 2: "vst", 3: "ab", 4: "both" }[k]);
+    const m = { 1: "orig", 2: "vst", 3: "ab", 4: "both" }[k];
+    m === "vst" ? audition(selNotes[0], "vst") : auditionFull(selNotes[0], m);
   }
 });
 
@@ -501,7 +502,80 @@ function playBuf(buf, gain, when, offset = 0, dur) {
   dur == null ? src.start(when, offset) : src.start(when, offset, dur);
   auditionSrcs.push(src);
 }
+// ---- 音色库：当前音源下每个音高一段 1.5 s 的录音，单击音符即时播放
+const bank = { buffers: new Map(), loading: null };
+function bankKey(p) { return S.plugin.version + "|" + p; }
+async function prefetchBank(extra = []) {
+  const need = [...new Set([...S.notes.map(n => n.pitch), ...extra])]
+    .filter(p => !bank.buffers.has(bankKey(p))).sort((a, b) => a - b);
+  if (!need.length || bank.loading) return bank.loading;
+  const ver = S.plugin.version;
+  bank.loading = (async () => {
+    const prev = $("status").textContent;
+    try {
+      status("正在预载 " + S.plugin.name + " 的 " + need.length + " 个音高（完成后单击音符即时发声）…");
+      for (let i = 0; i < need.length; i += 60) {            // 分批，避免单次渲染太长
+        const part = need.slice(i, i + 60);
+        const r = await api("/api/render/bank", { pitches: part }, true);
+        if (S.plugin.version !== ver) return;                // 期间换了音源，作废
+        const buf = await ensureCtx().decodeAudioData(await r.arrayBuffer());
+        const ps = (r.headers.get("X-Bank-Pitches") || part.join(",")).split(",").map(Number);
+        const spacing = parseFloat(r.headers.get("X-Bank-Spacing") || "2.2");
+        let peak = 1e-6;
+        for (let c = 0; c < buf.numberOfChannels; c++) for (const v of buf.getChannelData(c)) peak = Math.max(peak, Math.abs(v));
+        ps.forEach((p, k) => {
+          const a = Math.floor(k * spacing * buf.sampleRate);
+          const len = Math.min(Math.floor(spacing * buf.sampleRate), buf.length - a);
+          const piece = actx.createBuffer(buf.numberOfChannels, len, buf.sampleRate);
+          for (let c = 0; c < buf.numberOfChannels; c++) {
+            const d = buf.getChannelData(c).subarray(a, a + len), o = piece.getChannelData(c);
+            for (let j = 0; j < len; j++) o[j] = d[j] * (0.7 / peak);   // 与整轨渲染同样的响度归一
+          }
+          bank.buffers.set(ver + "|" + p, piece);
+        });
+      }
+      status(prev.startsWith("正在预载") ? "音色预载完成" : prev);
+    } catch (err) { status("音色预载失败：" + err.message, true); }
+    finally { bank.loading = null; }
+  })();
+  return bank.loading;
+}
+/** 即时播放某个音高：有音色库就用音色库；没有就先用内置预览音顶上（不等待），同时在后台预载。 */
+function playPitchNow(p, dur, when) {
+  const buf = bank.buffers.get(bankKey(p));
+  const g = actx.createGain(); g.connect(gVst);
+  const len = Math.max(0.12, Math.min(dur, 1.5));
+  if (buf) {
+    const src = actx.createBufferSource(); src.buffer = buf; src.connect(g);
+    g.gain.setValueAtTime(1, when + len); g.gain.linearRampToValueAtTime(0, when + len + 0.25);
+    src.start(when, 0, len + 0.3); auditionSrcs.push(src);
+  } else {
+    const f = 440 * Math.pow(2, (p - 69) / 12);
+    g.gain.setValueAtTime(0, when); g.gain.linearRampToValueAtTime(0.25, when + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.08, when + len); g.gain.linearRampToValueAtTime(0, when + len + 0.15);
+    [1, 2, 3, 4].forEach(h => {
+      const o = actx.createOscillator(), og = actx.createGain();
+      o.frequency.value = f * h; og.gain.value = Math.pow(0.5, h - 1);
+      o.connect(og); og.connect(g); o.start(when); o.stop(when + len + 0.2); auditionSrcs.push(o);
+    });
+    prefetchBank([p]);
+  }
+}
+
+/** 单击 / 键盘试听：“音符音高”与“叠加”即时发声，不等待渲染。 */
 async function audition(n, mode) {
+  if (mode === "vst" || mode === "both") {
+    ensureCtx(); stopAudition();
+    const t = actx.currentTime + 0.02, dur = Math.min(8, n.end - n.start);
+    playPitchNow(n.pitch, dur, t);
+    if (mode === "both" && S.audioBuf) playBuf(S.audioBuf, gOrig, t, n.start, dur);
+    return;
+  }
+  return auditionFull(n, mode);
+}
+
+/** 按钮试听：按音符完整时长精确渲染。 */
+async function auditionFull(n, mode) {
   ensureCtx(); stopAudition();
   const dur = Math.min(8, n.end - n.start);
   try {
@@ -515,10 +589,9 @@ async function audition(n, mode) {
     if (mode === "both") { if (S.audioBuf) playBuf(S.audioBuf, gOrig, t, n.start, dur); playBuf(vb, gVst, t); }
   } catch (err) { status("试听失败：" + err.message, true); }
 }
-async function auditionPitch(p) {
+function auditionPitch(p) {
   ensureCtx(); stopAudition();
-  try { playBuf(await vstNoteBuffer(p, 100, 0.6), gVst, actx.currentTime + 0.02); }
-  catch (err) { status("试听失败：" + err.message, true); }
+  playPitchNow(p, 0.8, actx.currentTime + 0.02);
 }
 
 // 走带
@@ -637,6 +710,7 @@ async function analyze() {
     clampScroll(); updateGridUI(); updateNoteInfo(); updateCheckSummary(); draw();
     const eng = res.engine === "poly" ? "复音引擎" : "单音引擎";
     const why = res.polyphony != null ? `（自动：同时发声约 ${res.polyphony} 个音级）` : "";
+    setTimeout(() => prefetchBank(), 300);
     status(`${eng}${why}识别完成：${S.notes.length} 个音符，${S.grid.bpm.toFixed(2)} BPM，${S.grid.beats_per_bar} 拍/小节` +
       (S.key ? `，调性 ${S.key.name}` : "") + `，用时 ${res.elapsed}s`);
   } catch (err) { status("分析失败：" + err.message, true); }
@@ -784,9 +858,9 @@ function updateNoteInfo() {
 }
 function selOne() { return S.notes.find(n => S.sel.has(n.id)); }
 $("btnAudOrig").onclick = () => selOne() && audition(selOne(), "orig");
-$("btnAudVst").onclick = () => selOne() && audition(selOne(), "vst");
-$("btnAudAB").onclick = () => selOne() && audition(selOne(), "ab");
-$("btnAudBoth").onclick = () => selOne() && audition(selOne(), "both");
+$("btnAudVst").onclick = () => selOne() && auditionFull(selOne(), "vst");
+$("btnAudAB").onclick = () => selOne() && auditionFull(selOne(), "ab");
+$("btnAudBoth").onclick = () => selOne() && auditionFull(selOne(), "both");
 
 // ---------------------------------------------------------------- 校验
 async function runCheck(notes) {
@@ -884,7 +958,9 @@ async function loadPluginList() {
   setPluginInfo(r.current);
 }
 function setPluginInfo(info) {
-  if (info.version !== S.plugin.version) { S.vstDirty = true; noteCache.clear(); }
+  const changed = info.version !== S.plugin.version;
+  if (changed) { S.vstDirty = true; noteCache.clear(); bank.buffers.clear(); }
+  if (changed && !info.editor_open && S.notes.length) setTimeout(() => prefetchBank(), 300);
   const wasStandalone = S.plugin.renderer === "standalone";
   S.plugin = info;
   const standalone = info.renderer === "standalone";
