@@ -73,3 +73,4 @@ main { flex: 1; display: flex; min-height: 0; }
 .slider output { color: var(--text); font-family: Consolas, monospace; font-size: 12px; text-align: right; }
 #side section[hidden] { display: none; }
 #presetRow[hidden] { display: none; }
+#legatoRow[hidden] { display: none; }

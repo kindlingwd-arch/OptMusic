@@ -419,6 +419,38 @@ def fuse_melody(mono_notes: list[dict], poly_notes: list[dict], pitch_curve: dic
     return fused, {"pyin": len(mono_notes), "poly_added": len(added), "poly_total": len(poly_notes)}
 
 
+def fuse_melody_poly_first(poly_notes: list[dict], mono_notes: list[dict], pitch_curve: dict | None,
+                           fill_overlap: float = 0.15, contra_agree: float = 0.3) -> tuple[list[dict], dict]:
+    """单旋律融合 v2：**复音模型音符为主干**（起点准），pYIN 补漏、并用 pYIN 去掉明确错误的音。
+
+    在 vocadito（40 段独唱，两位标注者）上：音高+起点 F1 0.635，复音引擎 0.619，pYIN 主干的 v1 只有 0.566。
+    1. 复音音符：若 pYIN 音高曲线在它的时间段内有 ≥5 个有声帧、且与它相差 ≤1 半音的不到 30%
+       （pYIN 明确是别的音高，多为泛音 / 八度错），去掉；
+    2. pYIN 音符：若与保留下来的复音音符在时间上的重叠 < 15%（复音模型漏掉的地方），补进来。"""
+    hop = pitch_curve["hop_sec"] if pitch_curve else None
+    curve = np.array([np.nan if v is None else v for v in pitch_curve["midi"]]) if pitch_curve else None
+    keep, dropped = [], 0
+    for n in poly_notes:
+        if curve is not None:
+            seg = curve[int(n["start"] / hop): int(n["end"] / hop) + 1]
+            seg = seg[~np.isnan(seg)]
+            if len(seg) >= 5 and np.mean(np.abs(seg - n["pitch"]) <= 1) < contra_agree:
+                dropped += 1
+                continue
+        keep.append(dict(n, source="poly"))
+    added = []
+    for m in mono_notes:
+        d = m["end"] - m["start"]
+        if d <= 0:
+            continue
+        ov = sum(max(0.0, min(m["end"], p["end"]) - max(m["start"], p["start"])) for p in keep)
+        if ov < fill_overlap * d:
+            added.append(dict(m, source="pyin"))
+    fused = sorted(keep + added, key=lambda x: (x["start"], x["pitch"]))
+    return fused, {"poly_total": len(poly_notes), "poly_kept": len(keep), "poly_dropped": dropped,
+                   "pyin_added": len(added), "pyin_total": len(mono_notes)}
+
+
 def monophony_ratio(out: dict, thresh: float = 0.4) -> float:
     """有声帧里“同时有两个以上非泛音关系的音在响”的比例；单旋律素材（人声、独奏）很低。"""
     note = out["note"]

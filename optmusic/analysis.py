@@ -119,10 +119,15 @@ def _nanmedian_filter(x: np.ndarray, size: int) -> np.ndarray:
     return out
 
 
+def run_pyin(y: np.ndarray, sr: int = SR, fmin: float = 65.0, fmax: float = 1400.0):
+    """pYIN 音高跟踪（较慢，结果可复用）：返回 (f0_hz, voiced_flag, voiced_prob)，帧移 HOP。"""
+    return librosa.pyin(y, fmin=fmin, fmax=fmax, sr=sr, frame_length=FRAME, hop_length=HOP, fill_na=np.nan)
+
+
 def transcribe_mono(y: np.ndarray, sr: int = SR, fmin: float = 65.0, fmax: float = 1400.0,
-                    min_note: float = 0.07, split_semitones: float = 0.75, voiced_prob_min: float = 0.25):
-    f0, voiced_flag, voiced_prob = librosa.pyin(
-        y, fmin=fmin, fmax=fmax, sr=sr, frame_length=FRAME, hop_length=HOP, fill_na=np.nan)
+                    min_note: float = 0.07, split_semitones: float = 0.75, voiced_prob_min: float = 0.25,
+                    pyin: tuple | None = None):
+    f0, voiced_flag, voiced_prob = pyin if pyin is not None else run_pyin(y, sr, fmin, fmax)
     midi = librosa.hz_to_midi(f0)
     # voiced_flag 是 pYIN 的 HMM 判定；voiced_prob 是置信度。混响重 / 处理重的人声置信度普遍很低（实测 0.04~0.06）
     # 但判定与音高都稳定，单旋律引擎会把 voiced_prob_min 放低（见 server.melody_notes）

@@ -23,7 +23,7 @@ hiddenimports += collect_submodules("uvicorn")
 hiddenimports += collect_submodules("pedalboard")   # 渲染 MIDI 时动态导入 pedalboard.midi_utils
 hiddenimports += collect_submodules("mido")
 hiddenimports += collect_submodules("basic_pitch") + collect_submodules("mir_eval")
-hiddenimports += ["onnxruntime", "pretty_midi", "resampy", "optmusic.poly"]
+hiddenimports += ["onnxruntime", "pretty_midi", "resampy", "optmusic.poly", "optmusic.melody"]
 hiddenimports += ["optmusic.server", "optmusic.analysis", "optmusic.harmony",
                   "optmusic.host", "optmusic.midi_export", "optmusic.checker", "multipart", "python_multipart"]
 

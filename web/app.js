@@ -714,6 +714,7 @@ async function analyze() {
     S.engine = res.engine;
     setActivation(res.activation);
     $("polySection").hidden = !["poly", "melody"].includes(res.engine);
+    $("legatoRow").hidden = res.engine !== "melody";
     showPolyStats(res.engine, res.stats);
     if (res.poly_defaults) polyDefaults = res.poly_defaults;      // 不同引擎默认值不同
     if (res.poly_params) setPolyUI(res.poly_params);
@@ -726,7 +727,7 @@ async function analyze() {
       S.view.scrollY = (HI - mid) * S.view.rowH - (H - TOP) / 2;
     }
     clampScroll(); updateGridUI(); updateNoteInfo(); updateCheckSummary(); draw();
-    const eng = { poly: "复音引擎", melody: "单旋律引擎（pYIN + 复音模型补漏）", mono: "单音引擎（pYIN）" }[res.engine] || res.engine;
+    const eng = res.engine_label || res.engine;
     const why = res.polyphony != null ? `（自动：多音比例 ${(res.polyphony * 100).toFixed(0)}%）` : "";
     setTimeout(() => prefetchBank(), 300);
     status(`${eng}${why}识别完成：${S.notes.length} 个音符，${S.grid.bpm.toFixed(2)} BPM，${S.grid.beats_per_bar} 拍/小节` +
@@ -754,9 +755,11 @@ let polyTouched = false;      // 用户是否手动改过复音参数（没改�
 function polyParams() {
   const p = {};
   POLY_UI.forEach(([id, key]) => { if ($(id).value !== "") p[key] = parseFloat($(id).value); });
+  p.legato_gap = $("chkLegato").checked ? 0.15 : 0;
   return p;
 }
 function setPolyUI(params) {
+  if (params.legato_gap != null) $("chkLegato").checked = params.legato_gap > 0;
   POLY_UI.forEach(([id, key, fmt]) => {
     if (params[key] == null) return;
     $(id).value = params[key];
@@ -773,11 +776,12 @@ POLY_UI.forEach(([id, , fmt]) => {
 });
 $("btnPolyReset").onclick = () => { polyTouched = false; setPolyUI(polyDefaults); retranscribe(); };
 $("chkHeat").onchange = draw;
+$("chkLegato").onchange = () => { polyTouched = true; retranscribe(); };
 
 function showPolyStats(engine, st) {
   if (!st || st.raw == null) { $("polyStats").textContent = ""; return; }
   $("polyStats").textContent = engine === "melody"
-    ? `pYIN ${st.pyin} + 补漏 ${st.poly_added}`
+    ? `复音 ${st.poly_kept}（去矛盾 ${st.poly_dropped}）+ pYIN 补漏 ${st.pyin_added}`
     : `模型 ${st.raw} → 合并 ${st.after_merge} → 去泛音 ${st.final}`;
 }
 

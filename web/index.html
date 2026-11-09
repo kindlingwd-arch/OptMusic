@@ -99,6 +99,10 @@
         <input id="ppReattack" type="range" min="0" max="0.8" step="0.05"><output></output></label>
       <label class="slider" title="与更强的低八度/十二度音同时出现、且比它弱到此比例以下的音视为泛音删除。0 = 不删除">去泛音
         <input id="ppGhost" type="range" min="0" max="1" step="0.05"><output></output></label>
+      <div class="row" id="legatoRow" hidden>
+        <label title="相邻音符间隙 ≤ 150 ms 时，把前一个音延到下一个音开始（MIDI“首尾相接”的写法）。不勾选 = 按实际发声时长">
+          <input id="chkLegato" type="checkbox"> 连奏（音符延到下一个音）</label>
+      </div>
       <div class="row">
         <label><input id="chkHeat" type="checkbox" checked> 显示模型热度图</label>
         <button id="btnPolyReset">恢复默认</button>

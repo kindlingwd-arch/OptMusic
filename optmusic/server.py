@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, checker, harmony, poly
+from . import analysis, checker, harmony, melody, poly
 from .host import BUILTIN, RENDER_SR, EditorOpen, PluginHost, scan_vst3
 from .midi_export import export_midi
 
@@ -106,9 +106,9 @@ def create_app(host: PluginHost) -> FastAPI:
     MELODY_RATIO = 0.18      # 多音比例低于此值判为单旋律（实测：独唱 0.06，合成旋律+鼓 0.15，和弦伴奏 0.25，复音合成 0.52+）
     mono_cache: dict[tuple, tuple] = {}
 
-    # 单旋律引擎的默认值与复音引擎不同（人声起音软、音节短，见算法文档 1.5.4）
-    MELODY_VOICED_MIN = 0.02     # pYIN 置信度下限（复音 / 仅 pYIN 引擎为 0.25）
-    MELODY_POLY_DEFAULTS = {"min_note_ms": 50}
+    # 单旋律引擎：复音音符为主干 + pYIN 补漏 / 去矛盾（见算法文档 1.5）
+    MELODY_VOICED_MIN = 0.02     # 补漏用的 pYIN 置信度下限（仅 pYIN 引擎为 0.25）
+    MELODY_POLY_DEFAULTS: dict = {"legato_gap": 0.0}   # 复音部分沿用复音引擎默认值；连奏填满默认关闭
 
     def engine_defaults(engine: str) -> dict:
         d = poly.PolyParams().to_dict()
@@ -116,25 +116,33 @@ def create_app(host: PluginHost) -> FastAPI:
             d.update(MELODY_POLY_DEFAULTS)
         return d
 
+    pyin_cache: dict[tuple, tuple] = {}
+
+    def pyin_result(pid: str, fmin=65.0, fmax=1400.0):
+        """pYIN 音高跟踪较慢（3.7 分钟约 30 秒），按工程缓存，供单音 / 单旋律引擎复用。"""
+        key = (pid, fmin, fmax)
+        if key not in pyin_cache:
+            if len(pyin_cache) > 2:
+                pyin_cache.clear()
+            pyin_cache[key] = analysis.run_pyin(get_audio(pid), fmin=fmin, fmax=fmax)
+        return pyin_cache[key]
+
     def mono_result(pid: str, fmin=65.0, fmax=1400.0, min_note=0.07, voiced_min=0.25):
         key = (pid, fmin, fmax, min_note, voiced_min)
         if key not in mono_cache:
             if len(mono_cache) > 4:
                 mono_cache.clear()
             mono_cache[key] = analysis.transcribe_mono(get_audio(pid), fmin=fmin, fmax=fmax, min_note=min_note,
-                                                       voiced_prob_min=voiced_min)
+                                                       voiced_prob_min=voiced_min, pyin=pyin_result(pid, fmin, fmax))
         return mono_cache[key]
 
     def melody_notes(pid: str, poly_params: dict | None):
-        """单旋律（人声 / 独奏）：pYIN 为主干 + 复音模型补漏。"""
-        mono_notes, curve = mono_result(pid, voiced_min=MELODY_VOICED_MIN)
+        """单旋律（人声 / 独奏）：复音模型主干 + pYIN 补漏 / 去矛盾 + 沿 pYIN 延伸（melody.py）。"""
         params = engine_defaults("melody") | (poly_params or {})
-        pn = poly.decode(poly_output(pid), poly.PolyParams.from_dict(params))
-        notes, st = poly.fuse_melody([dict(n) for n in mono_notes], pn, curve)
-        added = [n for n in notes if n.get("source") == "poly"]
-        analysis.refine_cents(get_audio(pid), analysis.SR, added)
-        return notes, {"raw": st["poly_total"], "after_merge": st["pyin"], "final": len(notes),
-                       "pyin": st["pyin"], "poly_added": st["poly_added"]}
+        notes, st, _ = melody.transcribe(get_audio(pid), poly_output(pid), pyin_result(pid), params)
+        return notes, {"raw": st["poly_total"], "after_merge": st["poly_kept"], "final": len(notes),
+                       "poly_kept": st["poly_kept"], "poly_dropped": st["poly_dropped"],
+                       "pyin_added": st["pyin_added"]}
 
     def tuning(pid: str) -> float:
         if pid not in tuning_cache:
@@ -211,6 +219,8 @@ def create_app(host: PluginHost) -> FastAPI:
                                                   audio_chroma(req.id))
             return {"notes": notes, "grid": grid.to_dict(), "pitch_curve": curve,
                     "activation": activation, "engine": mode, "polyphony": polyphony, "stats": stats,
+                    "engine_label": {"poly": "复音引擎", "melody": "单旋律引擎（复音模型 + pYIN 补漏）",
+                                     "mono": "单音引擎（pYIN）"}[mode],
                     "poly_params": engine_defaults(mode) | (req.poly_params or {}),
                     "poly_defaults": engine_defaults(mode),
                     "key": key, "chords": chords, "tuning_cents": round(tuning(req.id), 1),

@@ -7,7 +7,7 @@
 - 调用本机 **VST3 音源** 逐音试听（原声 / VST / A-B / 叠加）并自动校验每个音是否正确（八度错、半音错、音准偏）；
 - 可编辑音符（移动、改长度、增删、量化、撤销），导出标准 MIDI 文件。
 
-算法原理见 **[docs/算法原理.md](docs/算法原理.md)**。
+算法原理见 **[docs/算法原理.md](docs/算法原理.md)**；人声转写如何降低手工修改量见 **[docs/编辑量优化.md](docs/编辑量优化.md)**。
 
 ## 桌面版（推荐）
 
@@ -67,7 +67,7 @@ uv pip install --python .venv\Scripts\python.exe --no-deps basic-pitch==0.4.0
 
 或双击 `start.bat`。
 
-算法自测：
+算法自测（人声评测需先下载 vocadito 到 workspace/datasets/vocadito，见 `tests/vocal_bench.py`）：
 
 ```bash
 .venv\Scripts\python.exe -m tests.test_pipeline
@@ -115,7 +115,7 @@ tests/                 合成音频端到端自测
 
 ## 已知限制（v0.1）
 
-- 识别引擎自动选择：人声分轨 / 独奏用“单旋律”（pYIN 主干 + 复音模型补漏），和弦 / 钢琴 / 伴奏用复音模型 basic-pitch（ONNX）。复音模式对弦乐等缓慢起音乐器召回偏低，详见算法文档 1.5–1.6。
+- 识别引擎自动选择：人声分轨 / 独奏用“单旋律”（复音模型主干 + pYIN 补漏 + 沿音高延伸；vocadito 40 段独唱上：在唱帧覆盖 95.1%、音符 F1 0.662，两位人工标注者之间为 0.740），和弦 / 钢琴 / 伴奏用复音模型 basic-pitch（ONNX）。复音模式对弦乐等缓慢起音乐器召回偏低，详见算法文档 1.5–1.6。
 - 恒定速度假设，变速歌曲网格会逐渐偏离。
 - 只支持 VST3（pedalboard 不支持 VST2）。本机实测：Surge XT、PAPU、BBC Symphony Orchestra 直接用 VST3 渲染；Pianoteq 的 VST3 离线无声，程序会自动改用 Pianoteq 独立程序的命令行渲染（可选预设）。
 - 桌面版未做代码签名，首次运行时 Windows SmartScreen 可能提示“未知发布者”，选择“仍要运行”即可。
