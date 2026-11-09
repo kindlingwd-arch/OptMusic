@@ -1,0 +1,76 @@
+:root {
+  --bg: #16181d;
+  --panel: #1e2128;
+  --panel2: #252932;
+  --line: #2f3440;
+  --text: #d8dce4;
+  --muted: #8a919e;
+  --accent: #5b8def;
+  --ok: #3fb68b;
+  --offpitch: #f0a030;
+  --suspect: #e5484d;
+  --unchecked: #5b8def;
+  --silent: #6b7280;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 13px/1.4 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; overflow: hidden; }
+body { display: flex; flex-direction: column; }
+
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 6px 10px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+.brand { font-weight: 700; letter-spacing: .5px; color: var(--accent); margin-right: 4px; }
+.group { display: flex; align-items: center; gap: 6px; padding-right: 12px; border-right: 1px solid var(--line); }
+.group:last-child { border-right: none; }
+label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+input[type=range] { width: 70px; }
+
+button, select, input[type=number] {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
+  padding: 3px 8px; font: inherit; }
+input[type=number] { width: 70px; }
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.wide { flex: 1; }
+.lcd { font-family: Consolas, monospace; background: #0d0f12; padding: 2px 8px; border-radius: 3px;
+  color: #7fe0b5; min-width: 82px; text-align: center; }
+.lcd.small { color: var(--muted); }
+.muted { color: var(--muted); }
+
+main { flex: 1; display: flex; min-height: 0; }
+#rollWrap { flex: 1; position: relative; min-width: 0; }
+#roll { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: default; }
+
+#side { width: 280px; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 4px 10px 20px; }
+#side section { padding: 8px 0 10px; border-bottom: 1px solid var(--line); }
+#side h3 { margin: 4px 0 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+#side select { width: 100%; }
+.row { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.row select { width: auto; flex: 1; }
+#noteInfo { font-family: Consolas, "Microsoft YaHei", monospace; white-space: pre-line; min-height: 5.5em; }
+.help p { color: var(--muted); font-size: 12px; margin: 0; }
+.legend { margin-top: 8px; color: var(--muted); font-size: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.dot.ok { background: var(--ok); } .dot.offpitch { background: var(--offpitch); }
+.dot.suspect { background: var(--suspect); } .dot.unchecked { background: var(--unchecked); }
+#checkSummary b { color: var(--text); }
+
+#status { padding: 4px 10px; background: var(--panel); border-top: 1px solid var(--line); color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#status.err { color: var(--suspect); }
+
+#busy { position: fixed; inset: 0; background: rgba(10, 12, 16, .6); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px; z-index: 10; }
+#busy[hidden] { display: none; }
+.spinner { width: 36px; height: 36px; border: 3px solid var(--line); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.slider { display: grid; grid-template-columns: 92px 1fr 40px; align-items: center; gap: 6px; margin-top: 6px; }
+.slider input[type=range] { width: 100%; }
+.slider output { color: var(--text); font-family: Consolas, monospace; font-size: 12px; text-align: right; }
+#side section[hidden] { display: none; }
+#presetRow[hidden] { display: none; }
+#legatoRow[hidden] { display: none; }

@@ -147,3 +147,16 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# OptMusic
+workspace/
+.claude/
+__pycache__/
+*.pyc
+.venv/
+
+# 桌面版构建产物
+build/
+desktop/node_modules/
+desktop/dist/
+desktop/release/

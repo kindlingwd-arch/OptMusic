@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OptMusic 音乐工作台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="toolbar">
+  <div class="brand">OptMusic</div>
+
+  <div class="group">
+    <button id="btnOpen" class="primary">打开音频</button>
+    <input id="fileInput" type="file" accept=".wav,.flac,.mp3,.ogg,.aif,.aiff,audio/*" hidden>
+    <span id="fileName" class="muted">未加载</span>
+  </div>
+
+  <div class="group">
+    <label>识别
+      <select id="selMode">
+        <option value="auto" selected>自动</option>
+        <option value="melody">单旋律（人声/独奏）</option>
+        <option value="poly">复音（和弦/钢琴）</option>
+        <option value="mono">仅 pYIN（旧单音）</option>
+      </select>
+    </label>
+    <label>拍号
+      <select id="selMeter">
+        <option value="">自动</option>
+        <option value="3">3/4</option>
+        <option value="4">4/4</option>
+        <option value="6">6/8</option>
+      </select>
+    </label>
+    <button id="btnAnalyze" disabled>分析</button>
+  </div>
+
+  <div class="group transport">
+    <button id="btnHome" title="回到开头 (Home)">⏮</button>
+    <button id="btnPlay" title="播放/停止 (空格)">▶</button>
+    <span id="timeBar" class="lcd">1.1.000</span>
+    <span id="timeSec" class="lcd small">00:00.000</span>
+  </div>
+
+  <div class="group">
+    <label>监听
+      <select id="selMonitor">
+        <option value="orig">原声</option>
+        <option value="vst">VST</option>
+        <option value="mix" selected>混合</option>
+      </select>
+    </label>
+    <label title="原声音量">原<input id="volOrig" type="range" min="0" max="1.5" step="0.01" value="0.8"></label>
+    <label title="VST 音量">VST<input id="volVst" type="range" min="0" max="1.5" step="0.01" value="0.6"></label>
+    <label><input id="chkClick" type="checkbox"> 节拍器</label>
+  </div>
+
+  <div class="group">
+    <label>吸附
+      <select id="selSnap">
+        <option value="1">1/4</option>
+        <option value="0.5">1/8</option>
+        <option value="0.25" selected>1/16</option>
+        <option value="0.125">1/32</option>
+        <option value="0">关</option>
+      </select>
+    </label>
+  </div>
+</header>
+
+<main>
+  <div id="rollWrap"><canvas id="roll"></canvas></div>
+
+  <aside id="side">
+    <section>
+      <h3>音源 (VST3)</h3>
+      <select id="selPlugin"></select>
+      <div class="row">
+        <button id="btnLoadPlugin">加载</button>
+        <button id="btnEditor">插件界面</button>
+        <button id="btnRescan" title="重新扫描插件">↻</button>
+      </div>
+      <div id="presetRow" class="row" hidden>
+        <select id="selPreset" title="Pianoteq 音色预设"></select>
+      </div>
+      <div id="pluginStatus" class="muted">当前：内置合成器</div>
+    </section>
+
+    <section id="polySection" hidden>
+      <h3>复音识别参数 <span id="polyStats" class="muted"></span></h3>
+      <label class="slider" title="起音概率超过此值才算一个新音。越低越灵敏（音符更多，误报也更多）">起音灵敏度
+        <input id="ppOnset" type="range" min="0.2" max="0.8" step="0.05"><output></output></label>
+      <label class="slider" title="“正在响”的概率高于此值音符才持续。越低音符越长、弱音越多">持续灵敏度
+        <input id="ppFrame" type="range" min="0.1" max="0.6" step="0.05"><output></output></label>
+      <label class="slider" title="短于此长度的音符会被丢弃">最短音符(ms)
+        <input id="ppMin" type="range" min="30" max="250" step="10"><output></output></label>
+      <label class="slider" title="同音高的碎片：间隙处起音概率低于此值就合并为一个长音。0 = 不合并">合并碎片
+        <input id="ppReattack" type="range" min="0" max="0.8" step="0.05"><output></output></label>
+      <label class="slider" title="与更强的低八度/十二度音同时出现、且比它弱到此比例以下的音视为泛音删除。0 = 不删除">去泛音
+        <input id="ppGhost" type="range" min="0" max="1" step="0.05"><output></output></label>
+      <div class="row" id="legatoRow" hidden>
+        <label title="相邻音符间隙 ≤ 150 ms 时，把前一个音延到下一个音开始（MIDI“首尾相接”的写法）。不勾选 = 按实际发声时长">
+          <input id="chkLegato" type="checkbox"> 连奏（音符延到下一个音）</label>
+      </div>
+      <div class="row">
+        <label><input id="chkHeat" type="checkbox" checked> 显示模型热度图</label>
+        <button id="btnPolyReset">恢复默认</button>
+      </div>
+    </section>
+
+    <section>
+      <h3>节奏网格</h3>
+      <div class="row">
+        <label>BPM <input id="inBpm" type="number" step="0.01" min="20" max="400" value="120"></label>
+        <button id="btnBpmHalf">÷2</button>
+        <button id="btnBpmDouble">×2</button>
+      </div>
+      <div class="row">
+        <label>拍/小节 <input id="inBpb" type="number" min="1" max="16" value="4"></label>
+        <span id="gridConf" class="muted"></span>
+      </div>
+      <div class="row">
+        <span class="muted">下拍</span>
+        <button id="btnDownPrev" title="小节线前移一拍">◀ 一拍</button>
+        <button id="btnDownNext" title="小节线后移一拍">一拍 ▶</button>
+      </div>
+      <div class="row"><button id="btnSetDownbeat" class="wide">把选中音符设为小节起点</button></div>
+      <div id="gridInfo" class="muted"></div>
+    </section>
+
+    <section>
+      <h3>选中音符</h3>
+      <div id="noteInfo" class="muted">点击钢琴窗中的音符</div>
+      <div class="row">
+        <button id="btnAudOrig" title="1">原声</button>
+        <button id="btnAudVst" title="2">VST</button>
+        <button id="btnAudAB" title="3">A / B</button>
+        <button id="btnAudBoth" title="4">叠加</button>
+      </div>
+      <div class="row">
+        <label>单击试听
+          <select id="selClickAud">
+            <option value="vst" selected>音符音高（当前音源）</option>
+            <option value="orig">原声片段</option>
+            <option value="both">叠加</option>
+            <option value="off">关</option>
+          </select>
+        </label>
+      </div>
+    </section>
+
+    <section>
+      <h3>VST 逐音校验</h3>
+      <div class="row">
+        <label>音准容差 ±<input id="inTol" type="number" min="5" max="100" value="30">音分</label>
+      </div>
+      <div class="row">
+        <button id="btnCheck" class="primary wide">校验全部音符</button>
+      </div>
+      <div class="row">
+        <button id="btnCheckSel">只校验选中</button>
+        <button id="btnNextIssue">下一个问题 ▶</button>
+      </div>
+      <div class="row"><button id="btnApplySuggest" class="wide">采纳选中音符的建议音高</button></div>
+      <div id="checkSummary" class="legend">
+        <span class="dot unchecked"></span>未校验
+        <span class="dot ok"></span>正确
+        <span class="dot offpitch"></span>音准偏
+        <span class="dot suspect"></span>疑似错音
+      </div>
+    </section>
+
+    <section>
+      <h3>编辑 / 导出</h3>
+      <div class="row">
+        <button id="btnQuantize">量化 (Q)</button>
+        <button id="btnUndo">撤销</button>
+        <button id="btnRedo">重做</button>
+      </div>
+      <div class="row">
+        <select id="selAlign">
+          <option value="bar">按小节对齐</option>
+          <option value="audio">按音频起点对齐</option>
+        </select>
+        <button id="btnExport" class="primary">导出 MIDI</button>
+      </div>
+    </section>
+
+    <section class="help">
+      <h3>操作</h3>
+      <p>拖动音符改时间/音高，拖右边缘改时长；空白处拖动框选；双击空白添加音符；Delete 删除；↑↓ 移半音（Shift 八度）；←→ 按吸附移动；空格 播放；Ctrl+Z 撤销；滚轮上下滚动，Shift+滚轮左右，Ctrl+滚轮横向缩放，Ctrl+Shift+滚轮纵向缩放；点击顶部标尺定位播放头；点击左侧琴键试听 VST。</p>
+    </section>
+  </aside>
+</main>
+
+<footer id="status">就绪。打开一个 WAV 开始。</footer>
+<div id="busy" hidden><div class="spinner"></div><div id="busyText">处理中…</div></div>
+
+<script src="app.js"></script>
+</body>
+</html>

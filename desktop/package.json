@@ -1,0 +1,53 @@
+{
+  "name": "optmusic",
+  "productName": "OptMusic",
+  "version": "0.1.0",
+  "description": "OptMusic 音乐工作台",
+  "author": "OptMusic",
+  "license": "MIT",
+  "main": "dist/main.js",
+  "scripts": {
+    "build:ts": "tsc -p .",
+    "start": "npm run build:ts && electron .",
+    "build:backend": "node scripts/build-backend.mjs",
+    "dist": "npm run build:ts && npm run build:backend && electron-builder --win dir",
+    "dist:installer": "npm run build:ts && npm run build:backend && electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "com.optmusic.workbench",
+    "productName": "OptMusic",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "static/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/backend/optmusic-backend",
+        "to": "backend"
+      }
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "dir"
+      ],
+      "executableName": "OptMusic"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "OptMusic 音乐工作台",
+      "artifactName": "OptMusic-Setup-${version}.${ext}"
+    }
+  }
+}
